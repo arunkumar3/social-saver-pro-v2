@@ -1,0 +1,24 @@
+# Environment and secrets
+.env*
+!.env.example
+
+# Local config with real credentials
+# Keep config.js tracked (it has empty defaults), but never commit real keys in it
+# Users set credentials via the extension popup settings, which stores them in chrome.storage.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Node (if dependencies are added later)
+node_modules/
+
+# Claude
+.claude/
+
+# Old project copy
+social-saver-v2/
