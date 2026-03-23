@@ -642,16 +642,28 @@
   // BOOKMARK URL EXTRACTION (Phase 1 — lightweight, URLs only)
   // ═══════════════════════════════════════════════════════════════
 
+  // Returns true if all visible bookmarks were collected, false if we hit an old bookmark (before current year)
   function collectVisibleBookmarkURLs(accumulator) {
     const articles = document.querySelectorAll('article[data-testid="tweet"]');
+    const currentYear = new Date().getFullYear();
 
     for (const article of articles) {
-      const timeLink = article.querySelector("time")?.closest("a");
+      const timeEl = article.querySelector("time");
+      const timeLink = timeEl?.closest("a");
       const tweetUrl = timeLink ? "https://x.com" + timeLink.getAttribute("href") : "";
       if (!tweetUrl) continue;
 
+      // Check date — skip bookmarks from before current year
+      const datetime = timeEl?.getAttribute("datetime");
+      if (datetime) {
+        const bookmarkYear = new Date(datetime).getFullYear();
+        if (bookmarkYear < currentYear) {
+          console.log(`[SSP] Hit bookmark from ${bookmarkYear}, stopping collection (current year: ${currentYear})`);
+          return false; // Signal to stop scrolling
+        }
+      }
+
       if (!accumulator.has(tweetUrl)) {
-        // Extract just metadata — no full text
         const userName = article.querySelector('[data-testid="User-Name"]');
         let author = "";
         let authorHandle = "";
@@ -665,6 +677,7 @@
         accumulator.set(tweetUrl, { url: tweetUrl, author, authorHandle });
       }
     }
+    return true; // All visible bookmarks are current year
   }
 
   async function scrollAndCollectBookmarkURLs(maxTime) {
@@ -678,9 +691,9 @@
     const SCROLL_WAIT = 2000;
     const STALE_THRESHOLD = 8;
 
-    collectVisibleBookmarkURLs(accumulator);
+    let keepGoing = collectVisibleBookmarkURLs(accumulator);
 
-    while (Date.now() - start < max) {
+    while (keepGoing && Date.now() - start < max) {
       scrollEl.scrollTop = scrollEl.scrollHeight;
       await new Promise((r) => setTimeout(r, SCROLL_WAIT));
 
@@ -689,7 +702,11 @@
       scrollEl.scrollTop = scrollEl.scrollHeight;
       await new Promise((r) => setTimeout(r, 500));
 
-      collectVisibleBookmarkURLs(accumulator);
+      keepGoing = collectVisibleBookmarkURLs(accumulator);
+      if (!keepGoing) {
+        console.log(`[SSP] Stopped scrolling: hit bookmarks from previous year. Collected ${accumulator.size} URLs.`);
+        break;
+      }
 
       const newHeight = scrollEl.scrollHeight;
       const newSeenCount = accumulator.size;
