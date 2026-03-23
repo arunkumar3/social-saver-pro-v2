@@ -29,6 +29,11 @@
       if (ht === "article" || ht === "notes") return "article";
     }
 
+    // Check for X Article DOM elements (longform articles on /status/ URLs)
+    if (document.querySelector('[data-testid="twitterArticleReadView"], [data-testid="twitterArticleRichTextView"], [data-testid="twitter-article-title"]')) {
+      return "article";
+    }
+
     // Tweet/thread pages: /username/status/1234
     if (url.match(/\/(status|statuses)\/\d+/)) {
       // Check if it's a thread (multiple tweets from same author)
@@ -135,9 +140,19 @@
 
     // Title
     const skipTitles = new Set(["Article", "Conversation", "Post", "Home", "Explore"]);
-    for (const el of pc.querySelectorAll("h1")) {
-      const t = el.innerText.trim();
-      if (t.length > 5 && !skipTitles.has(t)) { data.title = t; break; }
+
+    // Try X Article title first (data-testid="twitter-article-title")
+    const xArticleTitle = pc.querySelector('[data-testid="twitter-article-title"]');
+    if (xArticleTitle) {
+      const t = xArticleTitle.innerText.trim();
+      if (t.length > 5 && !skipTitles.has(t)) data.title = t;
+    }
+
+    if (!data.title) {
+      for (const el of pc.querySelectorAll("h1")) {
+        const t = el.innerText.trim();
+        if (t.length > 5 && !skipTitles.has(t)) { data.title = t; break; }
+      }
     }
 
     // Fallback: X Notes-specific heading selectors
@@ -194,11 +209,37 @@
     // Full text — cascading extraction with fallbacks
     const paragraphs = [];
 
+    // Attempt 0: X Article (longform) — twitterArticleReadView contains full article body
+    const articleReadView = pc.querySelector('[data-testid="twitterArticleReadView"]');
+    if (articleReadView) {
+      // The read view contains the title + body. Extract body text, skipping the title.
+      const fullArticleText = articleReadView.innerText?.trim();
+      if (fullArticleText && fullArticleText.length > 50) {
+        // Remove the title from the beginning if it's duplicated
+        let bodyText = fullArticleText;
+        if (data.title && bodyText.startsWith(data.title)) {
+          bodyText = bodyText.substring(data.title.length).trim();
+        }
+        paragraphs.push(bodyText);
+      }
+    }
+
+    // Also check twitterArticleRichTextView (narrower, just the rich text body)
+    if (!paragraphs.length) {
+      const richTextView = pc.querySelector('[data-testid="twitterArticleRichTextView"]');
+      if (richTextView) {
+        const text = richTextView.innerText?.trim();
+        if (text && text.length > 50) paragraphs.push(text);
+      }
+    }
+
     // Attempt 1: Standard tweetText selector (works for regular tweets embedded in articles)
-    pc.querySelectorAll('[data-testid="tweetText"]').forEach((tt) => {
-      const text = tt.innerText.trim();
-      if (text && text.length > 10) paragraphs.push(text);
-    });
+    if (!paragraphs.length) {
+      pc.querySelectorAll('[data-testid="tweetText"]').forEach((tt) => {
+        const text = tt.innerText.trim();
+        if (text && text.length > 10) paragraphs.push(text);
+      });
+    }
 
     // Attempt 2: X Notes/Article-specific content areas
     if (!paragraphs.length) {
@@ -219,12 +260,11 @@
       const articleAuthor = data.authorHandle;
       const cells = pc.querySelectorAll('[data-testid="cellInnerDiv"]');
       for (const cell of cells) {
-        // Check if this cell belongs to a different author
         if (articleAuthor) {
           const cellHandle = cell.querySelector('[data-testid="User-Name"] a');
           const cellHandleText = cellHandle?.innerText.trim();
           if (cellHandleText && cellHandleText.startsWith("@") && cellHandleText !== articleAuthor) {
-            break; // Hit reply section — stop collecting
+            break;
           }
         }
         cell.querySelectorAll('p, div[dir="auto"], [lang]').forEach((el) => {
