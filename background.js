@@ -274,8 +274,9 @@ function updateSyncNotification(current, total, message) {
 }
 
 async function performBookmarkSync() {
-  const TAB_LOAD_WAIT = 2000;
+  const TAB_LOAD_WAIT = 3500;
   const BETWEEN_TAB_DELAY = 1500;
+  const RETRY_WAIT = 2000;
 
   try {
     // ── Phase 1: Collect bookmark URLs from bookmarks page ──
@@ -283,7 +284,7 @@ async function performBookmarkSync() {
 
     const bmTab = await chrome.tabs.create({
       url: "https://x.com/i/bookmarks",
-      active: false,
+      active: true,
     });
 
     await waitForTabLoad(bmTab.id);
@@ -348,17 +349,29 @@ async function performBookmarkSync() {
       updateSyncNotification(i + 1, toProcess.length);
 
       try {
-        const tab = await chrome.tabs.create({ url: bm.url, active: false });
+        const tab = await chrome.tabs.create({ url: bm.url, active: true });
         await waitForTabLoad(tab.id);
         await new Promise((r) => setTimeout(r, TAB_LOAD_WAIT));
         await ensureContentScript(tab.id);
 
         // Auto-scroll to load lazy content (threads, articles), then extract
-        const response = await chrome.tabs.sendMessage(tab.id, {
+        let response = await chrome.tabs.sendMessage(tab.id, {
           action: "autoScrollAndExtract",
         });
 
-        const content = response?.content;
+        let content = response?.content;
+        console.log(`[SSP] [${i + 1}/${toProcess.length}] ${bm.url} → ${content?.fullText?.length || 0} chars`);
+
+        // Retry once if content came back empty (X may still be hydrating)
+        if (!content?.fullText || content.fullText.length === 0) {
+          console.log(`[SSP] Retry: waiting ${RETRY_WAIT}ms for ${bm.url}`);
+          await new Promise((r) => setTimeout(r, RETRY_WAIT));
+          response = await chrome.tabs.sendMessage(tab.id, {
+            action: "autoScrollAndExtract",
+          });
+          content = response?.content;
+          console.log(`[SSP] Retry result: ${content?.fullText?.length || 0} chars`);
+        }
 
         if (content && content.fullText && content.fullText.length > 0) {
           const result = await saveContent(content);
