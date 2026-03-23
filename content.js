@@ -598,13 +598,109 @@
   });
   observer.observe(document.body, { childList: true, subtree: true });
 
+  // ═══════════════════════════════════════════════════════════════
+  // BOOKMARK URL EXTRACTION (Phase 1 — lightweight, URLs only)
+  // ═══════════════════════════════════════════════════════════════
+
+  function collectVisibleBookmarkURLs(accumulator) {
+    const articles = document.querySelectorAll('article[data-testid="tweet"]');
+
+    for (const article of articles) {
+      const timeLink = article.querySelector("time")?.closest("a");
+      const tweetUrl = timeLink ? "https://x.com" + timeLink.getAttribute("href") : "";
+      if (!tweetUrl) continue;
+
+      if (!accumulator.has(tweetUrl)) {
+        // Extract just metadata — no full text
+        const userName = article.querySelector('[data-testid="User-Name"]');
+        let author = "";
+        let authorHandle = "";
+        if (userName) {
+          for (const a of userName.querySelectorAll("a")) {
+            const t = a.innerText.trim();
+            if (t.startsWith("@")) authorHandle = t;
+            else if (t.length > 1 && t !== "\u00B7") author = author || t;
+          }
+        }
+        accumulator.set(tweetUrl, { url: tweetUrl, author, authorHandle });
+      }
+    }
+  }
+
+  async function scrollAndCollectBookmarkURLs(maxTime) {
+    const max = maxTime || SSP_CONFIG?.MAX_SCROLL_TIME || 60000;
+    const start = Date.now();
+    const scrollEl = document.scrollingElement || document.documentElement;
+    const accumulator = new Map();
+    let lastHeight = 0;
+    let lastSeenCount = 0;
+    let staleCount = 0;
+    const SCROLL_WAIT = 2000;
+    const STALE_THRESHOLD = 8;
+
+    collectVisibleBookmarkURLs(accumulator);
+
+    while (Date.now() - start < max) {
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+      await new Promise((r) => setTimeout(r, SCROLL_WAIT));
+
+      scrollEl.scrollTop = scrollEl.scrollHeight - 500;
+      await new Promise((r) => setTimeout(r, 300));
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+      await new Promise((r) => setTimeout(r, 500));
+
+      collectVisibleBookmarkURLs(accumulator);
+
+      const newHeight = scrollEl.scrollHeight;
+      const newSeenCount = accumulator.size;
+
+      if (newHeight === lastHeight && newSeenCount === lastSeenCount) {
+        staleCount++;
+        console.log(`[SSP] URL scroll: stale ${staleCount}/${STALE_THRESHOLD}, collected ${newSeenCount}`);
+        if (staleCount >= STALE_THRESHOLD) break;
+      } else {
+        staleCount = 0;
+        console.log(`[SSP] URL scroll: collected ${newSeenCount} URLs`);
+      }
+
+      lastHeight = newHeight;
+      lastSeenCount = newSeenCount;
+    }
+
+    scrollEl.scrollTop = 0;
+    await new Promise((r) => setTimeout(r, 300));
+
+    return Array.from(accumulator.values());
+  }
+
   // Listen for messages from background (bookmark sync)
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.action === "extractBookmarks") {
       scrollAndCollectBookmarks(msg.maxScrollTime).then((bookmarks) => {
         sendResponse({ bookmarks });
       });
-      return true; // async response
+      return true;
+    }
+
+    if (msg.action === "extractBookmarkURLs") {
+      scrollAndCollectBookmarkURLs(msg.maxScrollTime).then((bookmarks) => {
+        sendResponse({ bookmarks });
+      });
+      return true;
+    }
+
+    if (msg.action === "autoScrollAndExtract") {
+      (async () => {
+        try {
+          await autoScrollForContent();
+          const content = extractContent();
+          sendResponse({ content });
+        } catch (err) {
+          console.error("[SSP] autoScrollAndExtract failed:", err);
+          sendResponse({ content: null, error: err.message });
+        }
+      })();
+      return true;
     }
 
     if (msg.action === "checkPage") {

@@ -10,7 +10,7 @@
 let config = {
   supabaseUrl: "",
   supabaseAnonKey: "",
-  syncHour: 0,
+  syncHour: 9,
   syncMinute: 0,
 };
 
@@ -193,140 +193,228 @@ async function triggerAIProcessing(bookmarkId) {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// MIDNIGHT BOOKMARK SYNC
+// DAILY BOOKMARK SYNC (9 AM, auto-start)
 // ═══════════════════════════════════════════════════════════════
 
-// Set up the midnight alarm
 async function setupSyncAlarm() {
   await loadConfig();
 
-  // Clear existing alarm
-  await chrome.alarms.clear("midnight-sync");
+  await chrome.alarms.clear("daily-sync");
 
-  // Calculate next occurrence
   const now = new Date();
   const next = new Date();
   next.setHours(config.syncHour, config.syncMinute, 0, 0);
 
-  // If that time already passed today, schedule for tomorrow
   if (next <= now) {
     next.setDate(next.getDate() + 1);
   }
 
-  chrome.alarms.create("midnight-sync", {
+  chrome.alarms.create("daily-sync", {
     when: next.getTime(),
-    periodInMinutes: 24 * 60, // Repeat daily
+    periodInMinutes: 24 * 60,
   });
 
   console.log("[SSP] Sync alarm set for:", next.toLocaleString());
 }
 
-// Handle alarm firing
+// Alarm fires → sync starts immediately (no notification prompt)
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === "midnight-sync") {
+  if (alarm.name === "daily-sync") {
     await loadConfig();
     if (!isConfigured()) {
       console.warn("[SSP] Sync skipped — Supabase not configured");
       return;
     }
+    performBookmarkSync();
+  }
+});
 
-    // Show notification
-    chrome.notifications.create("sync-ready", {
-      type: "basic",
-      iconUrl: "icons/icon128.png",
-      title: "Social Saver Pro",
-      message: "Ready to sync your X bookmarks. Click to start.",
-      priority: 2,
-      requireInteraction: true,
+// Helper: wait for a tab to finish loading
+function waitForTabLoad(tabId) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error("Tab load timeout"));
+    }, 30000);
+
+    const listener = (id, info) => {
+      if (id === tabId && info.status === "complete") {
+        chrome.tabs.onUpdated.removeListener(listener);
+        clearTimeout(timeout);
+        resolve();
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+// Helper: inject content scripts if not already present
+async function ensureContentScript(tabId) {
+  try {
+    await chrome.tabs.sendMessage(tabId, { action: "checkPage" });
+  } catch {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["config.js", "content.js"],
     });
+    await new Promise((r) => setTimeout(r, 1000));
   }
-});
+}
 
-// Handle notification click — start the sync
-chrome.notifications.onClicked.addListener(async (notificationId) => {
-  if (notificationId === "sync-ready") {
-    chrome.notifications.clear("sync-ready");
-    await performBookmarkSync();
-  }
-});
+// Helper: update sync progress notification
+function updateSyncNotification(current, total, message) {
+  chrome.notifications.create("sync-progress", {
+    type: "basic",
+    iconUrl: "icons/icon128.png",
+    title: "Social Saver Pro — Syncing",
+    message: message || `Syncing bookmark ${current} of ${total}...`,
+    priority: 1,
+    silent: true,
+  });
+}
 
 async function performBookmarkSync() {
+  const TAB_LOAD_WAIT = 2000;
+  const BETWEEN_TAB_DELAY = 1500;
+
   try {
-    // Open bookmarks page
-    const tab = await chrome.tabs.create({
+    // ── Phase 1: Collect bookmark URLs from bookmarks page ──
+    updateSyncNotification(0, 0, "Opening bookmarks page...");
+
+    const bmTab = await chrome.tabs.create({
       url: "https://x.com/i/bookmarks",
-      active: true,
+      active: false,
     });
 
-    // Wait for page to load
-    await new Promise((resolve) => {
-      const listener = (tabId, info) => {
-        if (tabId === tab.id && info.status === "complete") {
-          chrome.tabs.onUpdated.removeListener(listener);
-          setTimeout(resolve, 2000); // Extra wait for X's JS rendering
-        }
-      };
-      chrome.tabs.onUpdated.addListener(listener);
+    await waitForTabLoad(bmTab.id);
+    await new Promise((r) => setTimeout(r, TAB_LOAD_WAIT));
+    await ensureContentScript(bmTab.id);
+
+    const urlResponse = await chrome.tabs.sendMessage(bmTab.id, {
+      action: "extractBookmarkURLs",
+      maxScrollTime: 60000,
     });
 
-    // Inject content script if not already there, then extract bookmarks
-    let response;
-    try {
-      response = await chrome.tabs.sendMessage(tab.id, {
-        action: "extractBookmarks",
-        maxScrollTime: 60000,
+    const bookmarkURLs = urlResponse?.bookmarks || [];
+    console.log(`[SSP] Phase 1: collected ${bookmarkURLs.length} bookmark URLs`);
+
+    // Close bookmarks tab
+    await chrome.tabs.remove(bmTab.id);
+
+    if (bookmarkURLs.length === 0) {
+      chrome.notifications.create("sync-done", {
+        type: "basic",
+        iconUrl: "icons/icon128.png",
+        title: "Social Saver Pro — Sync Complete",
+        message: "No bookmarks found to sync.",
+        priority: 1,
       });
-    } catch {
-      // Content script might not be injected yet
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ["config.js", "content.js"],
-      });
-      await new Promise((r) => setTimeout(r, 1000));
-      response = await chrome.tabs.sendMessage(tab.id, {
-        action: "extractBookmarks",
-        maxScrollTime: 60000,
-      });
+      await chrome.storage.local.set({ lastSyncTime: new Date().toISOString() });
+      return;
     }
 
-    const bookmarks = response?.bookmarks || [];
-    console.log(`[SSP] Found ${bookmarks.length} bookmarks to sync`);
+    // ── Phase 1.5: Filter out already-complete bookmarks ──
+    const urls = bookmarkURLs.map((b) => b.url);
+    let existingComplete = new Set();
+    try {
+      // Query bookmarks that already have full content and AI processing
+      const existing = await supabaseSelect(
+        "bookmarks",
+        `url=in.(${urls.map((u) => `"${encodeURIComponent(u)}"`).join(",")})`
+        + `&select=url,full_text,ai_processed`
+      );
+      for (const row of existing) {
+        if (row.full_text && row.full_text.length > 200 && row.ai_processed) {
+          existingComplete.add(row.url);
+        }
+      }
+    } catch (err) {
+      console.warn("[SSP] Could not filter existing bookmarks:", err);
+    }
 
-    // Save each bookmark
+    const toProcess = bookmarkURLs.filter((b) => !existingComplete.has(b.url));
+    const skippedCount = bookmarkURLs.length - toProcess.length;
+    console.log(`[SSP] Phase 2: processing ${toProcess.length}, skipping ${skippedCount} complete`);
+
+    updateSyncNotification(0, toProcess.length, `Syncing bookmarks... (0 of ${toProcess.length})`);
+
+    // ── Phase 2: Open each URL individually for full extraction ──
     let saved = 0;
     let updated = 0;
-    let skipped = 0;
+    let failed = 0;
 
-    for (const bookmark of bookmarks) {
-      const result = await saveContent(bookmark);
-      if (result.success) {
-        if (result.message === "Already saved") skipped++;
-        else if (result.message === "Updated") updated++;
-        else saved++;
+    for (let i = 0; i < toProcess.length; i++) {
+      const bm = toProcess[i];
+      updateSyncNotification(i + 1, toProcess.length);
+
+      try {
+        const tab = await chrome.tabs.create({ url: bm.url, active: false });
+        await waitForTabLoad(tab.id);
+        await new Promise((r) => setTimeout(r, TAB_LOAD_WAIT));
+        await ensureContentScript(tab.id);
+
+        // Auto-scroll to load lazy content (threads, articles), then extract
+        const response = await chrome.tabs.sendMessage(tab.id, {
+          action: "autoScrollAndExtract",
+        });
+
+        const content = response?.content;
+
+        if (content && content.fullText && content.fullText.length > 0) {
+          const result = await saveContent(content);
+          if (result.success) {
+            if (result.message === "Updated") updated++;
+            else if (result.message !== "Already saved") saved++;
+          }
+        } else {
+          // Fallback: save with metadata from Phase 1
+          const fallback = {
+            url: bm.url,
+            type: "tweet",
+            title: "",
+            author: bm.author || "",
+            authorHandle: bm.authorHandle || "",
+            fullText: "",
+            images: [],
+            date: null,
+          };
+          await saveContent(fallback);
+          failed++;
+        }
+
+        await chrome.tabs.remove(tab.id);
+      } catch (err) {
+        console.warn(`[SSP] Failed to process ${bm.url}:`, err);
+        failed++;
       }
-      // Small delay to avoid rate limiting
-      await new Promise((r) => setTimeout(r, 200));
+
+      // Delay between tabs to be gentle on X
+      if (i < toProcess.length - 1) {
+        await new Promise((r) => setTimeout(r, BETWEEN_TAB_DELAY));
+      }
     }
 
-    // Close the bookmarks tab
-    await chrome.tabs.remove(tab.id);
+    // Clear progress notification
+    chrome.notifications.clear("sync-progress");
 
-    // Show results notification
-    const parts = [`${saved} new`];
+    // Show results
+    const parts = [];
+    if (saved > 0) parts.push(`${saved} new`);
     if (updated > 0) parts.push(`${updated} updated`);
-    if (skipped > 0) parts.push(`${skipped} unchanged`);
+    if (skippedCount > 0) parts.push(`${skippedCount} skipped`);
+    if (failed > 0) parts.push(`${failed} failed`);
     chrome.notifications.create("sync-done", {
       type: "basic",
       iconUrl: "icons/icon128.png",
       title: "Social Saver Pro — Sync Complete",
-      message: `Bookmarks: ${parts.join(", ")}.`,
+      message: `Bookmarks: ${parts.join(", ") || "nothing to update"}.`,
       priority: 1,
     });
 
-    // Store last sync time
     await chrome.storage.local.set({ lastSyncTime: new Date().toISOString() });
   } catch (err) {
     console.error("[SSP] Bookmark sync failed:", err);
+    chrome.notifications.clear("sync-progress");
     chrome.notifications.create("sync-error", {
       type: "basic",
       iconUrl: "icons/icon128.png",
