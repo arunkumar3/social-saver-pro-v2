@@ -11,12 +11,15 @@
     "notifications",
     "tabs",
     "downloads",
-    "offscreen"
+    "offscreen",
+    "cookies"
   ],
   "host_permissions": [
     "https://x.com/*",
     "https://twitter.com/*",
-    "https://pbs.twimg.com/*"
+    "https://pbs.twimg.com/*",
+    "https://*.instagram.com/*",
+    "http://127.0.0.1:8787/*"
   ],
   "background": {
     "service_worker": "background.js",

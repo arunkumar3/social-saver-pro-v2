@@ -565,6 +565,28 @@ async function performBookmarkSync() {
 // MESSAGE HANDLER
 // ═══════════════════════════════════════════════════════════════
 
+const SERVER_BASE = "http://127.0.0.1:8787";
+
+async function exportInstagramCookies() {
+  try {
+    const cookies = await chrome.cookies.getAll({ domain: "instagram.com" });
+    if (!cookies.length) {
+      return { ok: false, error: "No Instagram cookies found — log in to Instagram in Chrome first." };
+    }
+    const res = await fetch(`${SERVER_BASE}/cookies`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cookies }),
+    });
+    if (!res.ok) return { ok: false, error: `Server returned ${res.status}` };
+    const body = await res.json();
+    console.log(`[SSP] exported ${body.count} Instagram cookies`);
+    return { ok: true, count: body.count };
+  } catch (err) {
+    return { ok: false, error: `Server unreachable: ${err.message}` };
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "saveContent") {
     saveContent(msg.data).then(sendResponse);
@@ -583,6 +605,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.action === "manualSync") {
     performBookmarkSync().then(() => sendResponse({ success: true }));
+    return true;
+  }
+
+  if (msg.action === "exportCookies") {
+    exportInstagramCookies().then(sendResponse);
     return true;
   }
 
