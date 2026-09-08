@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { pathToFileURL } from 'node:url';
 import { CONFIG } from './config.js';
 import { send } from './http.js';
 import { health } from './routes/health.js';
@@ -20,7 +21,7 @@ export function createServer(deps) {
   });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   createServer({ db: null, config: CONFIG })
     .listen(CONFIG.PORT, CONFIG.HOST, () =>
       console.log(`[server] listening on http://${CONFIG.HOST}:${CONFIG.PORT}`));
