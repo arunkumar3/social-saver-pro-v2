@@ -15,6 +15,9 @@ const inputKey = document.getElementById("input-key");
 const saveConfigBtn = document.getElementById("save-config-btn");
 const cancelConfigBtn = document.getElementById("cancel-config-btn");
 const feedback = document.getElementById("feedback");
+const inputPdf = document.getElementById("input-pdf");
+const inputPdfImages = document.getElementById("input-pdf-images");
+const pdfImagesField = document.getElementById("pdf-images-field");
 
 // ── Load status on open ──────────────────────────────────────
 
@@ -67,10 +70,40 @@ function formatRelativeTime(date) {
 // ── Load saved config into inputs ────────────────────────────
 
 async function loadConfigInputs() {
-  const stored = await chrome.storage.local.get(["supabaseUrl", "supabaseAnonKey"]);
+  const stored = await chrome.storage.local.get([
+    "supabaseUrl",
+    "supabaseAnonKey",
+    "pdfEnabled",
+    "pdfIncludeImages",
+  ]);
   if (stored.supabaseUrl) inputUrl.value = stored.supabaseUrl;
   if (stored.supabaseAnonKey) inputKey.value = stored.supabaseAnonKey;
+  inputPdf.checked = stored.pdfEnabled ?? true;
+  inputPdfImages.checked = stored.pdfIncludeImages ?? true;
+  syncPdfFieldState();
 }
+
+// ── PDF settings (applied immediately, no Save needed) ───────
+
+function syncPdfFieldState() {
+  inputPdfImages.disabled = !inputPdf.checked;
+  pdfImagesField.classList.toggle("disabled", !inputPdf.checked);
+}
+
+async function savePdfSettings() {
+  syncPdfFieldState();
+  await chrome.runtime.sendMessage({
+    action: "saveConfig",
+    config: {
+      pdfEnabled: inputPdf.checked,
+      pdfIncludeImages: inputPdfImages.checked,
+    },
+  });
+  showFeedback("success", inputPdf.checked ? "PDF export on" : "PDF export off");
+}
+
+inputPdf.addEventListener("change", savePdfSettings);
+inputPdfImages.addEventListener("change", savePdfSettings);
 
 // ── Settings toggle ──────────────────────────────────────────
 

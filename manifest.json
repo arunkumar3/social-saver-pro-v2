@@ -9,11 +9,14 @@
     "storage",
     "alarms",
     "notifications",
-    "tabs"
+    "tabs",
+    "downloads",
+    "offscreen"
   ],
   "host_permissions": [
     "https://x.com/*",
-    "https://twitter.com/*"
+    "https://twitter.com/*",
+    "https://pbs.twimg.com/*"
   ],
   "background": {
     "service_worker": "background.js",

@@ -13,6 +13,7 @@ Social Saver Pro is a Chrome extension that captures tweets, threads, and articl
 - **Action items** — AI extracts actionable tasks from saved content with status tracking
 - **Full-text search** — Search across all saved content from the dashboard
 - **Intelligent upsert** — Re-saving content upgrades existing records with richer data
+- **PDF copies** — Every saved bookmark is also written to `Downloads/SocialSaver/` as its own PDF (text, source link, images), so your content survives without Supabase or X
 
 ## Architecture
 
@@ -113,6 +114,9 @@ social-saver-pro-v2/
 ├── content.js             # Content script: page detection, extraction, UI
 ├── content.css            # Floating save button styles
 ├── config.js              # Default config (credentials set via popup)
+├── offscreen.html         # Offscreen document host for the PDF renderer
+├── offscreen.js           # Builds one PDF per bookmark (jsPDF)
+├── libs/jspdf.umd.min.js  # Vendored jsPDF 2.5.2 (MIT) — MV3 forbids remote scripts
 ├── popup.html             # Extension popup UI
 ├── popup.js               # Popup logic: status, sync, settings
 ├── supabase-schema.sql    # Database schema (run in Supabase SQL Editor)
@@ -128,6 +132,23 @@ All configuration is done through the extension popup — no need to edit files.
 | Supabase URL | Your project's REST API URL | — |
 | Supabase Anon Key | Public anon key for client access | — |
 | Sync Hour | Hour for daily bookmark sync (0-23) | 0 (midnight) |
+| Save a PDF copy of each bookmark | Write each saved bookmark to `Downloads/SocialSaver/` | On |
+| Include images in PDFs | Embed up to 4 images per PDF | On |
+
+### PDF export
+
+PDFs are generated in an offscreen document (the MV3 service worker has no DOM)
+and written via `chrome.downloads`, one file per bookmark, named
+`SocialSaver/<date>_<handle>_<title-slug>.pdf`. Generation is fire-and-forget:
+a PDF failure can never break the Supabase save.
+
+Two things to know:
+
+- **Emoji and non-Latin text are dropped.** jsPDF's built-in fonts are
+  WinAnsi-encoded, so smart quotes and dashes are normalized to ASCII and
+  anything outside Latin-1 is stripped rather than printed as garbage.
+- **New permissions:** `downloads`, `offscreen`, and host access to
+  `pbs.twimg.com` (needed to fetch tweet images).
 
 ## Database Schema
 
