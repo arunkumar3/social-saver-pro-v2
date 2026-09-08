@@ -25,7 +25,7 @@ built, not the first.
 |---|---|
 | Hosting | Fully local. No cloud services. |
 | Existing Supabase data | Discarded. Re-sync from source. |
-| Database | SQLite, single file, `sqlite-vec` + FTS5 |
+| Database | SQLite via built-in `node:sqlite`, single file, `sqlite-vec` + FTS5 |
 | Runtime | Node server on localhost, auto-started at logon |
 | Instagram media | Downloaded out-of-browser via yt-dlp / gallery-dl |
 | Transcription | faster-whisper on GPU, in a dedicated venv |
@@ -159,8 +159,22 @@ person scrolling their own saved page.
 
 Media resolution happens afterward, out of process:
 
-- `yt-dlp --cookies-from-browser chrome` for Reels and video posts
+- `yt-dlp --cookies <file>` for Reels and video posts
 - `gallery-dl` for image posts and carousels, which yt-dlp handles poorly
+
+**Cookies come from the extension, not from the cookie store.** Spike B
+established that `--cookies-from-browser chrome` fails on this machine: Chrome
+152 uses app-bound encryption and holds a lock on the cookie database, so
+external tools cannot read it (`Could not copy Chrome cookie database`,
+yt-dlp issue 7271).
+
+Instead the extension calls `chrome.cookies.getAll({domain: 'instagram.com'})`
+and posts the result to the server, which writes a Netscape `cookies.txt` for
+the downloaders. Chrome grants its own extension the access it denies external
+processes, so this sidesteps both the lock and the encryption. It costs one
+`cookies` permission and a `https://*.instagram.com/*` host permission.
+
+Cookies are refreshed on every manual sync, since Instagram rotates them.
 
 Downloads are rate-limited and serialized. This is a background queue with no
 deadline.
@@ -369,8 +383,8 @@ embedding require it, and they wait rather than fail.
 
 **Phase 0 — Environment.** Create a project venv on `torch 2.10.0+cu130` (the
 version ComfyUI already proves works on this GPU) with `faster-whisper` and
-`gallery-dl`. No existing environment is modified. Log in `INSTALLED.md`. Run
-both spikes below.
+`gallery-dl`. No existing environment is modified. Log in `INSTALLED.md`.
+(Both spikes are already complete — see *Risks and spikes*.)
 
 **Phase 1 — Database and capture.** Schema, ingest server, auto-start,
 extension repointed at localhost, Twitter sync fixed, Instagram URL
@@ -393,17 +407,29 @@ contains would be guesswork.
 
 ## Risks and spikes
 
-Two unknowns are resolved before Phase 1 code is written, not assumed:
+Both spikes were run on 2026-09-08. Results below.
 
-**Spike A — `sqlite-vec` on Windows x64 / Node 24.** Load the extension,
-create a `vec0` table, insert and query a 768-dim vector. If prebuilds are
-unavailable for this platform, the fallback is a separate LanceDB store, which
-costs the single-file property and the single-query join.
+**Spike A — `sqlite-vec` on Windows x64 / Node 24: PASS.** The
+`sqlite-vec-windows-x64` prebuild loads into Node 24's built-in `node:sqlite`
+via `enableLoadExtension` — no `better-sqlite3`, and therefore no native
+compiled dependency anywhere in the project. Verified with a `vec0` table of
+500 x 768-dim vectors: KNN returned in 0.9 ms with the query vector ranked
+first. LanceDB fallback is not needed.
 
-**Spike B — Instagram media retrieval.** Take one saved image post and one
-saved Reel and confirm `yt-dlp` and `gallery-dl` retrieve them with
-`--cookies-from-browser chrome`. This is the load-bearing assumption of the
-entire Instagram path.
+One binding detail: `node:sqlite` requires `BigInt` for `INTEGER PRIMARY KEY`
+values on a `vec0` table. A plain JavaScript number raises
+`Only integers are allowed for primary key values`.
+
+**Spike B — Instagram media retrieval: the original approach failed; a better
+one was found.** `--cookies-from-browser chrome` does not work on this
+machine — Chrome 152's app-bound encryption plus a file lock produce
+`Could not copy Chrome cookie database`. The design now sources cookies from
+the extension instead (see *Instagram capture*), and `yt-dlp --cookies <file>`
+was confirmed to parse a Netscape cookie file and reach Instagram's API.
+
+Residual: that validates plumbing, not authentication. A real session was not
+exercised. The cookie-export path is therefore built and tested **first** in
+Phase 1, not last, so the assumption is proven before anything depends on it.
 
 Standing risks:
 
