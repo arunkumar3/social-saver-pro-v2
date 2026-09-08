@@ -22,3 +22,8 @@ node_modules/
 
 # Old project copy
 social-saver-v2/
+
+# Project venv and server working directories
+.venv/
+server/node_modules/
+server/data/
