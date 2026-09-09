@@ -13,6 +13,10 @@ const SSP_CONFIG = {
   MAX_SCROLL_TIME: 60000,  // Max 60s for bookmark page scrolling
   TAB_LOAD_WAIT: 2000,     // Wait after tab load for X rendering (ms)
   BETWEEN_TAB_DELAY: 1500, // Delay between processing individual bookmarks (ms)
+
+  SYNC_CONCURRENCY: 2,     // bookmark tabs open at once during sync
+  SYNC_WINDOW_WIDTH: 1200,
+  SYNC_WINDOW_HEIGHT: 900,
 };
 
 // Make available to both content script and service worker
