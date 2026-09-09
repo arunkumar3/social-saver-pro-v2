@@ -353,6 +353,39 @@ async function exportInstagramCookies() {
   }
 }
 
+async function syncInstagram() {
+  const cookieResult = await exportInstagramCookies();
+  if (!cookieResult.ok) return { ok: false, error: cookieResult.error };
+
+  const tab = await chrome.tabs.create({
+    url: "https://www.instagram.com/saved/all-posts/",
+    active: true,
+  });
+  try {
+    await waitForTabLoad(tab.id);
+    await new Promise((r) => setTimeout(r, 3000));
+
+    const response = await chrome.tabs.sendMessage(tab.id, {
+      action: "collectInstagramSaved",
+    });
+    const items = response?.items ?? [];
+    if (items.length === 0) {
+      return { ok: false, error: "No saved posts found — are you logged in?" };
+    }
+
+    const result = await SSPApi.ingest(items);
+    chrome.notifications.create("ig-sync-done", {
+      type: "basic",
+      iconUrl: "icons/icon128.png",
+      title: "Instagram sync complete",
+      message: `Collected ${items.length} saved posts`,
+    });
+    return { ok: true, collected: items.length, ...result };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "saveContent") {
     saveContent(msg.data).then(sendResponse);
@@ -376,6 +409,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.action === "exportCookies") {
     exportInstagramCookies().then(sendResponse);
+    return true;
+  }
+
+  if (msg.action === "syncInstagram") {
+    syncInstagram().then(sendResponse);
     return true;
   }
 

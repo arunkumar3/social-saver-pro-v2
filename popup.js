@@ -9,6 +9,7 @@ const pendingCount = document.getElementById("pending-count");
 const lastSync = document.getElementById("last-sync");
 const syncBtn = document.getElementById("sync-btn");
 const dashboardBtn = document.getElementById("dashboard-btn");
+const igSyncBtn = document.getElementById("ig-sync-btn");
 
 // ── Load status on open ──────────────────────────────────────
 
@@ -82,6 +83,29 @@ syncBtn.addEventListener("click", async () => {
       Sync Now
     `;
     syncBtn.disabled = false;
+    refreshStatus();
+  }, 2000);
+});
+
+// ── Instagram sync button ────────────────────────────────────
+
+igSyncBtn.addEventListener("click", async () => {
+  igSyncBtn.disabled = true;
+  const originalHTML = igSyncBtn.innerHTML;
+  igSyncBtn.textContent = "Collecting…";
+
+  const result = await chrome.runtime.sendMessage({ action: "syncInstagram" });
+
+  if (result.ok) {
+    igSyncBtn.textContent = `Collected ${result.collected}`;
+  } else {
+    igSyncBtn.textContent = "Sync failed";
+    console.error("[SSP] Instagram sync failed:", result.error);
+  }
+
+  setTimeout(() => {
+    igSyncBtn.innerHTML = originalHTML;
+    igSyncBtn.disabled = false;
     refreshStatus();
   }, 2000);
 });
