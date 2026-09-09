@@ -57,3 +57,43 @@ test('an expired session is reported as a named error, not a generic failure', a
   assert.equal(out.errorKind, 'auth_expired');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('a retry does not report stale files left behind by a previous failed attempt', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-med-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  const itemDir = path.join(dir, '10');
+  fs.mkdirSync(itemDir, { recursive: true });
+  fs.writeFileSync(path.join(itemDir, 'old.part'), 'stale');
+
+  const run = async (cmd, args) => {
+    const outDir = args[args.indexOf('-o') + 1];
+    fs.mkdirSync(path.dirname(outDir), { recursive: true });
+    fs.writeFileSync(path.join(path.dirname(outDir), 'clip.mp4'), 'x'.repeat(100));
+    return { code: 0, stdout: '', stderr: '' };
+  };
+  const out = await downloadItem(
+    { id: 10, platform: 'instagram', kind: 'reel', url: 'https://instagram.com/reel/d/' },
+    { config, run });
+  assert.equal(out.ok, true);
+  assert.equal(out.files.length, 1);
+  assert.equal(path.basename(out.files[0].path), 'clip.mp4');
+  assert.ok(!out.files.some((f) => path.basename(f.path) === 'old.part'));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a missing item id is refused instead of clearing the whole media directory', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-med-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  const sentinel = path.join(dir, 'other-item', 'keep.mp4');
+  fs.mkdirSync(path.dirname(sentinel), { recursive: true });
+  fs.writeFileSync(sentinel, 'x');
+
+  const run = async () => { throw new Error('run should never be called'); };
+  const out = await downloadItem(
+    { id: '', platform: 'instagram', kind: 'reel', url: 'https://instagram.com/reel/e/' },
+    { config, run });
+  assert.equal(out.ok, false);
+  assert.equal(out.errorKind, 'download_failed');
+  assert.ok(fs.existsSync(sentinel), 'unrelated media must survive a missing-id call');
+  fs.rmSync(dir, { recursive: true, force: true });
+});

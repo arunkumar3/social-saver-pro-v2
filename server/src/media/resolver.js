@@ -19,7 +19,19 @@ function classifyKind(file) {
 }
 
 export async function downloadItem(item, { config, run = defaultRun }) {
-  const itemDir = path.join(config.MEDIA_DIR, String(item.id));
+  const id = item.id;
+  if (id === undefined || id === null || String(id).trim() === '') {
+    return { ok: false, files: [], error: 'item.id is missing; refusing to resolve a media directory',
+             errorKind: 'download_failed' };
+  }
+  const itemDir = path.join(config.MEDIA_DIR, String(id));
+
+  // itemDir is keyed only by item.id and persists across retry attempts, so a
+  // stale .part file / half-written image / gallery-dl metadata left behind
+  // by a previous failed attempt must not leak into this attempt's readdirSync
+  // below. Clear it first. force:true makes the first-ever attempt (no
+  // directory yet) a no-op instead of an error.
+  fs.rmSync(itemDir, { recursive: true, force: true });
   fs.mkdirSync(itemDir, { recursive: true });
 
   const downloader = chooseDownloader(item);
