@@ -13,24 +13,12 @@ import "./config.js";
 let config = {
   syncHour: 9,
   syncMinute: 0,
-  pdfEnabled: true,
-  pdfIncludeImages: true,
-  pdfFolder: "SocialSaver",
 };
 
 async function loadConfig() {
-  const stored = await chrome.storage.local.get([
-    "syncHour",
-    "syncMinute",
-    "pdfEnabled",
-    "pdfIncludeImages",
-  ]);
-  const defaults = globalThis.SSP_CONFIG || {};
+  const stored = await chrome.storage.local.get(["syncHour", "syncMinute"]);
   config.syncHour = stored.syncHour ?? 0;
   config.syncMinute = stored.syncMinute ?? 0;
-  config.pdfEnabled = stored.pdfEnabled ?? defaults.PDF_ENABLED ?? true;
-  config.pdfIncludeImages = stored.pdfIncludeImages ?? defaults.PDF_INCLUDE_IMAGES ?? true;
-  config.pdfFolder = defaults.PDF_FOLDER || "SocialSaver";
   return config;
 }
 
@@ -62,103 +50,6 @@ async function saveContent(data) {
   if (result.skipped > 0) return { success: true, message: "Already saved" };
   if (result.rejected > 0) return { success: false, error: "Server rejected the item" };
   return { success: true, message: "Saved" };
-}
-
-// ═══════════════════════════════════════════════════════════════
-// PDF EXPORT (one file per bookmark, via offscreen document)
-// ═══════════════════════════════════════════════════════════════
-
-const OFFSCREEN_PATH = "offscreen.html";
-
-// In-flight guard: two rapid saves must not both call createDocument()
-let offscreenPending = null;
-
-async function hasOffscreenDocument() {
-  // getContexts() landed in Chrome 116; on older builds we rely on the
-  // "only a single offscreen document" error instead.
-  if (!chrome.runtime.getContexts) return false;
-  const contexts = await chrome.runtime.getContexts({
-    contextTypes: ["OFFSCREEN_DOCUMENT"],
-    documentUrls: [chrome.runtime.getURL(OFFSCREEN_PATH)],
-  });
-  return contexts.length > 0;
-}
-
-// Chrome tears the offscreen document down on its own schedule, so re-check
-// rather than caching a handle.
-async function ensureOffscreen() {
-  if (!offscreenPending) {
-    offscreenPending = (async () => {
-      if (await hasOffscreenDocument()) return;
-      try {
-        await chrome.offscreen.createDocument({
-          url: OFFSCREEN_PATH,
-          reasons: ["BLOBS"],
-          justification: "Render saved bookmarks as PDF files",
-        });
-      } catch (err) {
-        // A concurrent call may have created it first
-        if (!String(err?.message || "").includes("Only a single offscreen")) throw err;
-      }
-    })().finally(() => {
-      offscreenPending = null;
-    });
-  }
-  return offscreenPending;
-}
-
-function revokeBlob(blobUrl) {
-  chrome.runtime
-    .sendMessage({ target: "offscreen", action: "revokeBlob", blobUrl })
-    .catch(() => {}); // offscreen doc already gone — nothing to revoke
-}
-
-function downloadPdf(blobUrl, filename) {
-  return new Promise((resolve, reject) => {
-    chrome.downloads.download(
-      { url: blobUrl, filename, conflictAction: "uniquify", saveAs: false },
-      (downloadId) => {
-        if (chrome.runtime.lastError || downloadId === undefined) {
-          revokeBlob(blobUrl);
-          reject(new Error(chrome.runtime.lastError?.message || "Download failed"));
-          return;
-        }
-
-        // Hold the blob until Chrome has finished writing the file
-        const listener = (delta) => {
-          if (delta.id !== downloadId) return;
-          const state = delta.state?.current;
-          if (state === "complete" || state === "interrupted") {
-            chrome.downloads.onChanged.removeListener(listener);
-            revokeBlob(blobUrl);
-          }
-        };
-        chrome.downloads.onChanged.addListener(listener);
-
-        resolve({ downloadId, filename });
-      }
-    );
-  });
-}
-
-async function generateBookmarkPdf(data) {
-  if (!config.pdfEnabled) return { skipped: true };
-  if (!data?.url) return { skipped: true };
-
-  await ensureOffscreen();
-
-  const res = await chrome.runtime.sendMessage({
-    target: "offscreen",
-    action: "generatePdf",
-    data,
-    options: { includeImages: config.pdfIncludeImages, folder: config.pdfFolder },
-  });
-
-  if (!res?.success) throw new Error(res?.error || "Offscreen renderer returned no PDF");
-
-  const result = await downloadPdf(res.blobUrl, res.filename);
-  console.log(`[SSP] PDF saved: ${result.filename} (${Math.round(res.size / 1024)}KB)`);
-  return result;
 }
 
 // ═══════════════════════════════════════════════════════════════

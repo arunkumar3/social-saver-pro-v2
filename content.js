@@ -580,7 +580,7 @@
         return;
       }
 
-      // Send to background service worker for Supabase save
+      // Send to background service worker to save to the local server
       const response = await chrome.runtime.sendMessage({
         action: "saveContent",
         data: content,
