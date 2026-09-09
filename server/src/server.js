@@ -34,4 +34,19 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   createServer({ db, config: CONFIG })
     .listen(CONFIG.PORT, CONFIG.HOST, () =>
       console.log(`[server] listening on http://${CONFIG.HOST}:${CONFIG.PORT}`));
+
+  const { runMediaStage } = await import('./worker/media-stage.js');
+  let draining = false;
+  setInterval(async () => {
+    if (draining) return;
+    draining = true;
+    try {
+      const out = await runMediaStage(db, { config: CONFIG, limit: 5 });
+      if (out.processed) console.log('[media]', out);
+    } catch (err) {
+      console.error('[media] stage error', err);
+    } finally {
+      draining = false;
+    }
+  }, 30000).unref();
 }
