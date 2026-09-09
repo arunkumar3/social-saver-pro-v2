@@ -18,13 +18,29 @@ function classifyKind(file) {
   return 'image';
 }
 
+// Allow-list: item.id must be a single, simple path segment. This rejects
+// '.', '..', '/', '\\' and anything containing a path separator or
+// traversal sequence, while still accepting falsy-but-valid ids like 0.
+const SAFE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
 export async function downloadItem(item, { config, run = defaultRun }) {
   const id = item.id;
-  if (id === undefined || id === null || String(id).trim() === '') {
-    return { ok: false, files: [], error: 'item.id is missing; refusing to resolve a media directory',
+  if (id === undefined || id === null || String(id).trim() === '' || !SAFE_ID_PATTERN.test(String(id))) {
+    return { ok: false, files: [], error: 'item.id is missing or unsafe; refusing to resolve a media directory',
              errorKind: 'download_failed' };
   }
   const itemDir = path.join(config.MEDIA_DIR, String(id));
+
+  // Belt-and-braces containment check: even with the regex above, verify the
+  // resolved itemDir is genuinely a direct child of the media root before
+  // ever touching the filesystem. Guards against the regex being loosened by
+  // accident later, or MEDIA_DIR/id interacting in an unforeseen way.
+  const resolvedMediaDir = path.resolve(config.MEDIA_DIR);
+  const resolvedItemDir = path.resolve(itemDir);
+  if (path.dirname(resolvedItemDir) !== resolvedMediaDir) {
+    return { ok: false, files: [], error: 'resolved item directory escapes the media root; refusing to resolve',
+             errorKind: 'download_failed' };
+  }
 
   // itemDir is keyed only by item.id and persists across retry attempts, so a
   // stale .part file / half-written image / gallery-dl metadata left behind

@@ -97,3 +97,46 @@ test('a missing item id is refused instead of clearing the whole media directory
   assert.ok(fs.existsSync(sentinel), 'unrelated media must survive a missing-id call');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+for (const dangerousId of ['.', '..', '/', '\\', '../../etc']) {
+  test(`a dangerous item id (${JSON.stringify(dangerousId)}) is refused and the media root survives intact`, async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-med-'));
+    const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+    const sentinel = path.join(dir, 'other-item', 'keep.mp4');
+    fs.mkdirSync(path.dirname(sentinel), { recursive: true });
+    fs.writeFileSync(sentinel, 'x');
+
+    const run = async () => { throw new Error('run should never be called'); };
+    const out = await downloadItem(
+      { id: dangerousId, platform: 'instagram', kind: 'reel', url: 'https://instagram.com/reel/f/' },
+      { config, run });
+
+    assert.equal(out.ok, false);
+    assert.equal(out.errorKind, 'download_failed');
+    // The whole point of this test: assert the filesystem was left alone,
+    // not just that the return value looks right. A regex-only guard that
+    // still let rmSync run against MEDIA_DIR itself would pass a
+    // return-value-only assertion while wiping everything.
+    assert.ok(fs.existsSync(dir), 'media root must still exist');
+    assert.ok(fs.existsSync(sentinel), 'unrelated media must survive a dangerous-id call');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+test('item.id === 0 is a legitimate falsy id and still works normally', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-med-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  const run = async (cmd, args) => {
+    const outDir = args[args.indexOf('-o') + 1];
+    fs.mkdirSync(path.dirname(outDir), { recursive: true });
+    fs.writeFileSync(path.join(path.dirname(outDir), 'clip.mp4'), 'x'.repeat(100));
+    return { code: 0, stdout: '', stderr: '' };
+  };
+  const out = await downloadItem(
+    { id: 0, platform: 'instagram', kind: 'reel', url: 'https://instagram.com/reel/g/' },
+    { config, run });
+  assert.equal(out.ok, true);
+  assert.equal(out.files.length, 1);
+  assert.ok(fs.existsSync(path.join(dir, '0')), 'the "0" item directory should have been created');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
