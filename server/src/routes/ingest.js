@@ -2,6 +2,32 @@ import { send, readJson } from '../http.js';
 
 const VALID_PLATFORMS = new Set(['twitter', 'instagram']);
 
+// Relative rank of a "kind" value. Re-ingesting a URL may only ever improve
+// its record, never downgrade it — a thread that has already been recognised
+// as a thread must not be flipped back to a plain tweet just because a later
+// scrape mislabels it and happens to carry a longer caption. Kinds outside
+// this map (post, reel, carousel, article, ...) aren't given an ordering
+// here since the spec only calls out the tweet/thread relationship; they
+// default to the same rank as 'tweet' and so are unaffected by this guard.
+const KIND_RANK = { tweet: 0, thread: 1 };
+const kindRank = (kind) => KIND_RANK[kind] ?? 0;
+
+// A bare truthiness check on `it.url` lets any non-empty string through,
+// which is then passed as the final argv token to a downloader subprocess
+// (see media/resolver.js). Require it to parse as an absolute http(s) URL so
+// values like "--exec=..." or "file:///etc/passwd" are rejected here, before
+// they ever reach a spawn() call.
+function isValidHttpUrl(value) {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+}
+
 export async function postIngest(req, res, { db }) {
   const body = await readJson(req);
   const items = Array.isArray(body?.items) ? body.items : null;
@@ -23,7 +49,7 @@ export async function postIngest(req, res, { db }) {
     'INSERT INTO media (item_id, kind, path) VALUES (?, ?, ?)');
 
   for (const it of items) {
-    if (!it?.url || !VALID_PLATFORMS.has(it.platform) || !it.kind) { rejected++; continue; }
+    if (!isValidHttpUrl(it?.url) || !VALID_PLATFORMS.has(it.platform) || !it.kind) { rejected++; continue; }
 
     const existing = findByUrl.get(it.url);
     const caption = it.caption ?? '';
@@ -40,7 +66,12 @@ export async function postIngest(req, res, { db }) {
     const isUpgrade = it.kind === 'thread' && existing.kind === 'tweet';
     const isLonger = caption.length > (existing.caption ?? '').length;
     if (isUpgrade || isLonger) {
-      updateItem.run(it.kind, it.title ?? '', it.author ?? '', it.authorHandle ?? '',
+      // Never write a lesser kind: only adopt the incoming kind when it
+      // ranks at or above the stored one, otherwise keep the existing kind
+      // while still allowing the other fields (caption, title, ...) to
+      // update on this pass.
+      const kind = kindRank(it.kind) >= kindRank(existing.kind) ? it.kind : existing.kind;
+      updateItem.run(kind, it.title ?? '', it.author ?? '', it.authorHandle ?? '',
         caption, it.sourceDate ?? null, existing.id);
       updated++;
     } else {

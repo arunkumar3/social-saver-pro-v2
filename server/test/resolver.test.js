@@ -34,6 +34,48 @@ test('a successful download reports the files that appeared', async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("a literal '--' precedes the url in the yt-dlp argv, so a malicious url can't be read as a flag", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-med-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  let capturedArgs;
+  const run = async (cmd, args) => {
+    capturedArgs = args;
+    const outDir = args[args.indexOf('-o') + 1];
+    fs.mkdirSync(path.dirname(outDir), { recursive: true });
+    fs.writeFileSync(path.join(path.dirname(outDir), 'clip.mp4'), 'x');
+    return { code: 0, stdout: '', stderr: '' };
+  };
+  await downloadItem(
+    { id: 20, platform: 'twitter', kind: 'tweet', url: 'https://x.com/a/status/1' },
+    { config, run });
+  const dashIndex = capturedArgs.indexOf('--');
+  assert.ok(dashIndex !== -1, "'--' must be present in the yt-dlp argv");
+  assert.equal(capturedArgs[dashIndex + 1], 'https://x.com/a/status/1');
+  assert.equal(capturedArgs[capturedArgs.length - 1], 'https://x.com/a/status/1');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a literal '--' precedes the url in the gallery-dl argv, so a malicious url can't be read as a flag", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-med-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  let capturedArgs;
+  const run = async (cmd, args) => {
+    capturedArgs = args;
+    const outDir = args[args.indexOf('-D') + 1];
+    fs.mkdirSync(outDir, { recursive: true });
+    fs.writeFileSync(path.join(outDir, 'photo.jpg'), 'x');
+    return { code: 0, stdout: '', stderr: '' };
+  };
+  await downloadItem(
+    { id: 21, platform: 'instagram', kind: 'post', url: 'https://instagram.com/p/z/' },
+    { config, run });
+  const dashIndex = capturedArgs.indexOf('--');
+  assert.ok(dashIndex !== -1, "'--' must be present in the gallery-dl argv");
+  assert.equal(capturedArgs[dashIndex + 1], 'https://instagram.com/p/z/');
+  assert.equal(capturedArgs[capturedArgs.length - 1], 'https://instagram.com/p/z/');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('a non-zero exit is reported, not thrown', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-med-'));
   const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };

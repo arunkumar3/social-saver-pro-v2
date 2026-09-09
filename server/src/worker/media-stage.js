@@ -39,8 +39,13 @@ export async function runMediaStage(db, { config, run, limit = 25 }) {
       logRun.run(item.id, 'media', 'ok', null, ms);
       succeeded++;
     } else {
-      markFail.run(result.error ?? 'unknown', MAX_ATTEMPTS, item.id);
-      logRun.run(item.id, 'media', 'error', `${result.errorKind}: ${result.error}`, ms);
+      // Persist the same "<errorKind>: <detail>" format used for job_runs.error
+      // on the item row too, so an auth_expired failure (fixable by logging
+      // back into Instagram) stays distinguishable from a generic
+      // download_failed one when looking at the item alone.
+      const stateError = `${result.errorKind}: ${result.error ?? 'unknown'}`;
+      markFail.run(stateError, MAX_ATTEMPTS, item.id);
+      logRun.run(item.id, 'media', 'error', stateError, ms);
       failed++;
     }
   }

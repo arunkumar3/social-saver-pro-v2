@@ -56,9 +56,12 @@ export async function downloadItem(item, { config, run = defaultRun }) {
   // gallery-dl's -o sets a config key=value, not an output template — it only
   // takes -D for the destination directory. yt-dlp's -o genuinely is the
   // output template, so that branch keeps it.
+  // A literal '--' terminates option parsing so item.url can never be
+  // misread as a flag (e.g. '--exec=...' or '--config-location=...') by the
+  // downloader — everything after it is forced to be a positional argument.
   const args = downloader === 'yt-dlp'
-    ? ['--cookies', config.COOKIES_PATH, '--no-warnings', '-o', outTemplate, item.url]
-    : ['--cookies', config.COOKIES_PATH, '-D', itemDir, item.url];
+    ? ['--cookies', config.COOKIES_PATH, '--no-warnings', '-o', outTemplate, '--', item.url]
+    : ['--cookies', config.COOKIES_PATH, '-D', itemDir, '--', item.url];
 
   const cmd = downloader === 'yt-dlp' ? 'yt-dlp' : galleryDlPath();
   const { code, stderr } = await run(cmd, args);

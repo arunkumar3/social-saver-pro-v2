@@ -99,6 +99,60 @@ test('an item missing a url is rejected without aborting the batch', async () =>
   } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('an item whose url is actually a downloader flag is rejected, not passed through', async () => {
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    const out = await post(base, '/ingest', { items: [
+      { platform: 'twitter', kind: 'tweet', url: '--exec=calc.exe', caption: 'evil' },
+      { platform: 'twitter', kind: 'tweet', url: 'https://x.com/a/status/2', caption: 'ok' },
+    ]});
+    assert.equal(out.rejected, 1);
+    assert.equal(out.inserted, 1);
+    assert.equal(db.prepare('SELECT count(*) c FROM items WHERE url = ?').get('--exec=calc.exe').c, 0);
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('an item with a non-http(s) scheme is rejected', async () => {
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    const out = await post(base, '/ingest', { items: [
+      { platform: 'twitter', kind: 'tweet', url: 'file:///etc/passwd', caption: 'evil' },
+    ]});
+    assert.equal(out.rejected, 1);
+    assert.equal(out.inserted, 0);
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a valid https item still succeeds', async () => {
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    const out = await post(base, '/ingest', { items: [
+      { platform: 'twitter', kind: 'tweet', url: 'https://x.com/a/status/3', caption: 'fine' },
+    ]});
+    assert.equal(out.inserted, 1);
+    assert.equal(out.rejected, 0);
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('re-saving a thread as a tweet with a longer caption updates the caption but never downgrades kind', async () => {
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    await post(base, '/ingest', { items: [
+      { platform: 'twitter', kind: 'thread', url: 'https://x.com/a/status/1', caption: 'short thread' }]});
+    const out = await post(base, '/ingest', { items: [
+      { platform: 'twitter', kind: 'tweet', url: 'https://x.com/a/status/1',
+        caption: 'a much, much longer caption than before' }]});
+    assert.equal(out.updated, 1);
+    const row = db.prepare('SELECT kind, caption FROM items WHERE url = ?').get('https://x.com/a/status/1');
+    assert.equal(row.kind, 'thread');
+    assert.equal(row.caption, 'a much, much longer caption than before');
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('known-urls returns only urls already stored', async () => {
   const { dir, db, server } = harness();
   const base = await listen(server);

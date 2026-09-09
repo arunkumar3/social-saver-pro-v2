@@ -67,6 +67,17 @@ test('an item parks in failed after three attempts', async () => {
   } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('an auth_expired failure is identifiable from the items row alone, not just job_runs', async () => {
+  const { dir, db, config } = harness();
+  const authFailRun = async () => ({ code: 1, stdout: '', stderr: 'login required to access this content' });
+  try {
+    db.prepare("INSERT INTO items(platform,kind,url) VALUES ('instagram','post','https://ig/p/1')").run();
+    await runMediaStage(db, { config, run: authFailRun, limit: 10 });
+    const row = db.prepare('SELECT state_error FROM items WHERE id = 1').get();
+    assert.match(row.state_error, /auth_expired/);
+  } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('every attempt is logged to job_runs', async () => {
   const { dir, db, config } = harness();
   try {
