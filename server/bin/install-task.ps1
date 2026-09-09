@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $script = Join-Path $PSScriptRoot 'start.cmd'
-$action    = New-ScheduledTaskAction -Execute $script
+$action    = New-ScheduledTaskAction -Execute "`"$script`""
 $trigger   = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)

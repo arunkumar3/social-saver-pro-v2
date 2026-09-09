@@ -49,12 +49,25 @@ Floating UI          Node 24 HTTP                     ↓
 ### 1. Create the Python Virtual Environment
 
 ```bash
-cd .venv
-python -m venv . --upgrade-deps
-. Scripts/activate          # on Windows Git Bash
-# or: . venv\Scripts\activate  on Windows PowerShell
-pip install torch fastwhisper gallery-dl
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install --upgrade pip
+
+# torch MUST come from the CUDA 12.8 index. A default `pip install torch`
+# pulls a build without sm_120 kernels, which reports cuda_available: True
+# and then fails on the first real operation with an RTX 50-series card.
+.venv/Scripts/python.exe -m pip install torch==2.10.0+cu130 \
+  --index-url https://download.pytorch.org/whl/cu130
+
+.venv/Scripts/python.exe -m pip install faster-whisper gallery-dl
 ```
+
+Verify the GPU installation:
+
+```bash
+.venv/Scripts/python.exe -c "import torch; x=torch.randn(64,64,device='cuda'); print('GPU OK', (x@x).sum().item())"
+```
+
+Note: `torch.cuda.is_available()` returns `True` even when no kernel can run on this hardware — a real tensor operation is the only reliable test. If you see `no kernel image is available for execution on the device`, the wrong torch build was installed; ensure you used the `cu130` index as shown above.
 
 The venv includes `torch`, `faster-whisper`, and `gallery-dl` for Phase 2 enrichment.
 
