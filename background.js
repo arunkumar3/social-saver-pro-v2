@@ -1,8 +1,9 @@
 /**
  * Social Saver Pro v2 - Background Service Worker
- * Handles: Supabase saves, midnight alarm, bookmark sync
+ * Handles: local-server saves, midnight alarm, bookmark sync
  */
 
+import "./api.js";
 import "./config.js";
 
 // ═══════════════════════════════════════════════════════════════
@@ -10,8 +11,6 @@ import "./config.js";
 // ═══════════════════════════════════════════════════════════════
 
 let config = {
-  supabaseUrl: "",
-  supabaseAnonKey: "",
   syncHour: 9,
   syncMinute: 0,
   pdfEnabled: true,
@@ -21,16 +20,12 @@ let config = {
 
 async function loadConfig() {
   const stored = await chrome.storage.local.get([
-    "supabaseUrl",
-    "supabaseAnonKey",
     "syncHour",
     "syncMinute",
     "pdfEnabled",
     "pdfIncludeImages",
   ]);
   const defaults = globalThis.SSP_CONFIG || {};
-  config.supabaseUrl = stored.supabaseUrl || "";
-  config.supabaseAnonKey = stored.supabaseAnonKey || "";
   config.syncHour = stored.syncHour ?? 0;
   config.syncMinute = stored.syncMinute ?? 0;
   config.pdfEnabled = stored.pdfEnabled ?? defaults.PDF_ENABLED ?? true;
@@ -39,183 +34,34 @@ async function loadConfig() {
   return config;
 }
 
-function isConfigured() {
-  return config.supabaseUrl && config.supabaseAnonKey;
-}
-
 // ═══════════════════════════════════════════════════════════════
-// SUPABASE CLIENT (lightweight, no SDK needed)
-// ═══════════════════════════════════════════════════════════════
-
-async function supabaseInsert(table, data) {
-  if (!isConfigured()) throw new Error("Supabase not configured");
-
-  const response = await fetch(`${config.supabaseUrl}/rest/v1/${table}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "apikey": config.supabaseAnonKey,
-      "Authorization": `Bearer ${config.supabaseAnonKey}`,
-      "Prefer": "return=representation",
-    },
-    body: JSON.stringify(data),
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Supabase insert failed: ${response.status} - ${err}`);
-  }
-
-  return response.json();
-}
-
-async function supabaseUpdate(table, id, data) {
-  if (!isConfigured()) throw new Error("Supabase not configured");
-
-  const response = await fetch(`${config.supabaseUrl}/rest/v1/${table}?id=eq.${id}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      "apikey": config.supabaseAnonKey,
-      "Authorization": `Bearer ${config.supabaseAnonKey}`,
-      "Prefer": "return=representation",
-    },
-    body: JSON.stringify(data),
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Supabase update failed: ${response.status} - ${err}`);
-  }
-
-  return response.json();
-}
-
-async function supabaseSelect(table, query = "") {
-  if (!isConfigured()) throw new Error("Supabase not configured");
-
-  const response = await fetch(`${config.supabaseUrl}/rest/v1/${table}?${query}`, {
-    headers: {
-      "apikey": config.supabaseAnonKey,
-      "Authorization": `Bearer ${config.supabaseAnonKey}`,
-    },
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Supabase select failed: ${response.status} - ${err}`);
-  }
-
-  return response.json();
-}
-
-// ═══════════════════════════════════════════════════════════════
-// SAVE CONTENT TO SUPABASE
+// SAVE CONTENT TO THE LOCAL SERVER
 // ═══════════════════════════════════════════════════════════════
 
 async function saveContent(data) {
-  await loadConfig();
+  const newFullText =
+    data.fullText || (data.tweets ? data.tweets.map((t) => t.text).join("\n\n") : "");
 
-  if (!isConfigured()) {
-    return { success: false, error: "Please configure Supabase in the extension settings" };
-  }
+  const item = {
+    platform: data.platform || "twitter",
+    kind: data.type || "tweet",
+    url: data.url,
+    externalId: data.externalId || null,
+    author: data.author || "",
+    authorHandle: data.authorHandle || "",
+    title: data.title || "",
+    caption: newFullText,
+    sourceDate: data.date || null,
+    mediaUrls: data.images || [],
+  };
 
-  try {
-    // Build the new content
-    const newFullText = data.fullText || (data.tweets ? data.tweets.map((t) => t.text).join("\n\n") : "");
-    const newType = data.type || "tweet";
+  const result = await SSPApi.ingest([item]);
 
-    // Check for duplicate by URL
-    const existing = await supabaseSelect(
-      "bookmarks",
-      `url=eq.${encodeURIComponent(data.url)}&select=id,type,full_text`
-    );
-
-    if (existing && existing.length > 0) {
-      const old = existing[0];
-      // Determine if new data is richer:
-      // 1. Type upgrade (thread > tweet) always wins
-      // 2. Same type: update only if new text is longer
-      const isTypeUpgrade = newType === "thread" && old.type === "tweet";
-      const isLongerText = newFullText.length > (old.full_text || "").length;
-
-      if (isTypeUpgrade || isLongerText) {
-        const updatedFields = {
-          type: newType,
-          title: data.title || "",
-          author: data.author || "",
-          author_handle: data.authorHandle || "",
-          full_text: newFullText,
-          images: data.images || [],
-          source_date: data.date || null,
-          ai_processed: false, // Re-trigger AI on updated content
-        };
-        await supabaseUpdate("bookmarks", old.id, updatedFields);
-        console.log(`[SSP] Updated existing bookmark ${old.id} (${old.type} → ${newType})`);
-
-        // Re-trigger AI processing for updated content
-        triggerAIProcessing(old.id).catch((err) =>
-          console.warn("[SSP] AI processing trigger failed:", err)
-        );
-
-        // Local PDF copy — fire and forget, never let it break the save
-        generateBookmarkPdf(data).catch((err) =>
-          console.warn("[SSP] PDF generation failed:", err)
-        );
-
-        return { success: true, message: "Updated", id: old.id };
-      }
-
-      return { success: true, message: "Already saved", id: old.id };
-    }
-
-    // Build the bookmark record for new insert
-    const record = {
-      url: data.url,
-      type: newType,
-      title: data.title || "",
-      author: data.author || "",
-      author_handle: data.authorHandle || "",
-      full_text: newFullText,
-      images: data.images || [],
-      source_date: data.date || null,
-      saved_at: new Date().toISOString(),
-      // AI fields — will be populated by Edge Function
-      category: null,
-      action_item: null,
-      ai_processed: false,
-    };
-
-    const result = await supabaseInsert("bookmarks", record);
-
-    // Trigger AI processing via Edge Function (fire and forget)
-    triggerAIProcessing(result[0]?.id).catch((err) =>
-      console.warn("[SSP] AI processing trigger failed:", err)
-    );
-
-    // Local PDF copy — fire and forget, never let it break the save
-    generateBookmarkPdf(data).catch((err) =>
-      console.warn("[SSP] PDF generation failed:", err)
-    );
-
-    return { success: true, id: result[0]?.id };
-  } catch (err) {
-    console.error("[SSP] Save error:", err);
-    return { success: false, error: err.message };
-  }
-}
-
-async function triggerAIProcessing(bookmarkId) {
-  if (!bookmarkId || !isConfigured()) return;
-
-  await fetch(`${config.supabaseUrl}/functions/v1/process-bookmark`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${config.supabaseAnonKey}`,
-    },
-    body: JSON.stringify({ bookmarkId }),
-  });
+  if (result.queued) return { success: true, message: "Queued" };
+  if (result.updated > 0) return { success: true, message: "Updated" };
+  if (result.skipped > 0) return { success: true, message: "Already saved" };
+  if (result.rejected > 0) return { success: false, error: "Server rejected the item" };
+  return { success: true, message: "Saved" };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -340,14 +186,14 @@ async function setupSyncAlarm() {
   console.log("[SSP] Sync alarm set for:", next.toLocaleString());
 }
 
+// Drain anything queued while the local server was unreachable.
+chrome.runtime.onStartup.addListener(() => SSPApi.flushQueue());
+chrome.runtime.onInstalled.addListener(() => SSPApi.flushQueue());
+
 // Alarm fires → sync starts immediately (no notification prompt)
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === "daily-sync") {
     await loadConfig();
-    if (!isConfigured()) {
-      console.warn("[SSP] Sync skipped — Supabase not configured");
-      return;
-    }
     performBookmarkSync();
   }
 });
@@ -437,21 +283,12 @@ async function performBookmarkSync() {
       return;
     }
 
-    // ── Phase 1.5: Filter out already-complete bookmarks ──
+    // ── Phase 1.5: Filter out bookmarks the server already has ──
     const urls = bookmarkURLs.map((b) => b.url);
     let existingComplete = new Set();
     try {
-      // Query bookmarks that already have full content and AI processing
-      const existing = await supabaseSelect(
-        "bookmarks",
-        `url=in.(${urls.map((u) => `"${encodeURIComponent(u)}"`).join(",")})`
-        + `&select=url,full_text,ai_processed`
-      );
-      for (const row of existing) {
-        if (row.full_text && row.full_text.length > 200 && row.ai_processed) {
-          existingComplete.add(row.url);
-        }
-      }
+      const known = await SSPApi.knownUrls(urls);
+      existingComplete = new Set(known);
     } catch (err) {
       console.warn("[SSP] Could not filter existing bookmarks:", err);
     }
@@ -565,15 +402,13 @@ async function performBookmarkSync() {
 // MESSAGE HANDLER
 // ═══════════════════════════════════════════════════════════════
 
-const SERVER_BASE = "http://127.0.0.1:8787";
-
 async function exportInstagramCookies() {
   try {
     const cookies = await chrome.cookies.getAll({ domain: "instagram.com" });
     if (!cookies.length) {
       return { ok: false, error: "No Instagram cookies found — log in to Instagram in Chrome first." };
     }
-    const res = await fetch(`${SERVER_BASE}/cookies`, {
+    const res = await fetch(`${SSPApi.baseUrl}/cookies`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ cookies }),
@@ -625,55 +460,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 async function getStats() {
-  await loadConfig();
-  const lastSync = (await chrome.storage.local.get("lastSyncTime")).lastSyncTime;
-
-  if (!isConfigured()) {
-    return { configured: false, lastSync };
-  }
-
   try {
-    // Get count of bookmarks
-    const response = await fetch(
-      `${config.supabaseUrl}/rest/v1/bookmarks?select=id&limit=1`,
-      {
-        headers: {
-          "apikey": config.supabaseAnonKey,
-          "Authorization": `Bearer ${config.supabaseAnonKey}`,
-          "Prefer": "count=exact",
-        },
-      }
-    );
-
-    const count = response.headers.get("content-range")?.split("/")[1] || "0";
-    return { configured: true, totalBookmarks: parseInt(count), lastSync };
+    const res = await fetch(`${SSPApi.baseUrl}/health`);
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    const queue = (await chrome.storage.local.get("ssp_pending_queue"))
+      .ssp_pending_queue ?? [];
+    return { connected: true, pending: queue.length };
   } catch {
-    return { configured: true, totalBookmarks: "?", lastSync };
+    const queue = (await chrome.storage.local.get("ssp_pending_queue"))
+      .ssp_pending_queue ?? [];
+    return { connected: false, pending: queue.length };
   }
 }
 
 async function testConnection() {
-  await loadConfig();
-  if (!isConfigured()) {
-    return { success: false, error: "Missing Supabase URL or key" };
-  }
-
   try {
-    const response = await fetch(`${config.supabaseUrl}/rest/v1/bookmarks?select=id&limit=1`, {
-      headers: {
-        "apikey": config.supabaseAnonKey,
-        "Authorization": `Bearer ${config.supabaseAnonKey}`,
-      },
-    });
-
-    if (response.ok) {
-      return { success: true };
-    } else {
-      const err = await response.text();
-      return { success: false, error: `${response.status}: ${err}` };
-    }
+    const res = await fetch(`${SSPApi.baseUrl}/health`);
+    if (!res.ok) return { success: false, error: `Server returned ${res.status}` };
+    return { success: true, message: "Local server reachable" };
   } catch (err) {
-    return { success: false, error: err.message };
+    return { success: false, error: "Local server not running — start it and retry." };
   }
 }
 
