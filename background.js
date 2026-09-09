@@ -213,58 +213,67 @@ async function performBookmarkSync() {
         const bm = toProcess[i];
         updateSyncNotification(i + 1, toProcess.length);
 
+        let tab;
         try {
-          const tab = await chrome.tabs.create({
+          tab = await chrome.tabs.create({
             url: bm.url,
             active: true,
             windowId: syncWindow.id,
           });
-          await waitForTabLoad(tab.id);
-          await new Promise((r) => setTimeout(r, TAB_LOAD_WAIT));
-          await ensureContentScript(tab.id);
+          try {
+            await waitForTabLoad(tab.id);
+            await new Promise((r) => setTimeout(r, TAB_LOAD_WAIT));
+            await ensureContentScript(tab.id);
 
-          // Auto-scroll to load lazy content (threads, articles), then extract
-          let response = await chrome.tabs.sendMessage(tab.id, {
-            action: "autoScrollAndExtract",
-          });
-
-          let content = response?.content;
-          console.log(`[SSP] [${i + 1}/${toProcess.length}] ${bm.url} → ${content?.fullText?.length || 0} chars`);
-
-          // Retry once if content came back empty (X may still be hydrating)
-          if (!content?.fullText || content.fullText.length === 0) {
-            console.log(`[SSP] Retry: waiting ${RETRY_WAIT}ms for ${bm.url}`);
-            await new Promise((r) => setTimeout(r, RETRY_WAIT));
-            response = await chrome.tabs.sendMessage(tab.id, {
+            // Auto-scroll to load lazy content (threads, articles), then extract
+            let response = await chrome.tabs.sendMessage(tab.id, {
               action: "autoScrollAndExtract",
             });
-            content = response?.content;
-            console.log(`[SSP] Retry result: ${content?.fullText?.length || 0} chars`);
-          }
 
-          if (content && content.fullText && content.fullText.length > 0) {
-            const result = await saveContent(content);
-            if (result.success) {
-              if (result.message === "Updated") updated++;
-              else if (result.message !== "Already saved") saved++;
+            let content = response?.content;
+            console.log(`[SSP] [${i + 1}/${toProcess.length}] ${bm.url} → ${content?.fullText?.length || 0} chars`);
+
+            // Retry once if content came back empty (X may still be hydrating)
+            if (!content?.fullText || content.fullText.length === 0) {
+              console.log(`[SSP] Retry: waiting ${RETRY_WAIT}ms for ${bm.url}`);
+              await new Promise((r) => setTimeout(r, RETRY_WAIT));
+              response = await chrome.tabs.sendMessage(tab.id, {
+                action: "autoScrollAndExtract",
+              });
+              content = response?.content;
+              console.log(`[SSP] Retry result: ${content?.fullText?.length || 0} chars`);
             }
-          } else {
-            // Fallback: save with metadata from Phase 1
-            const fallback = {
-              url: bm.url,
-              type: "tweet",
-              title: "",
-              author: bm.author || "",
-              authorHandle: bm.authorHandle || "",
-              fullText: "",
-              images: [],
-              date: null,
-            };
-            await saveContent(fallback);
-            failed++;
-          }
 
-          await chrome.tabs.remove(tab.id);
+            if (content && content.fullText && content.fullText.length > 0) {
+              const result = await saveContent(content);
+              if (result.success) {
+                if (result.message === "Updated") updated++;
+                else if (result.message !== "Already saved") saved++;
+              }
+            } else {
+              // Fallback: save with metadata from Phase 1
+              const fallback = {
+                url: bm.url,
+                type: "tweet",
+                title: "",
+                author: bm.author || "",
+                authorHandle: bm.authorHandle || "",
+                fullText: "",
+                images: [],
+                date: null,
+              };
+              await saveContent(fallback);
+              failed++;
+            }
+          } finally {
+            if (tab) {
+              try {
+                await chrome.tabs.remove(tab.id);
+              } catch {
+                /* tab may already be closed/discarded */
+              }
+            }
+          }
         } catch (err) {
           console.warn(`[SSP] Failed to process ${bm.url}:`, err);
           failed++;
