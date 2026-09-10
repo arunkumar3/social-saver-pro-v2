@@ -427,9 +427,25 @@ machine — Chrome 152's app-bound encryption plus a file lock produce
 the extension instead (see *Instagram capture*), and `yt-dlp --cookies <file>`
 was confirmed to parse a Netscape cookie file and reach Instagram's API.
 
-Residual: that validates plumbing, not authentication. A real session was not
-exercised. The cookie-export path is therefore built and tested **first** in
-Phase 1, not last, so the assumption is proven before anything depends on it.
+**Spike B residual closed, 2026-09-10.** A real exported Chrome session was
+exercised end to end. The extension's `chrome.cookies.getAll` returned 10
+Instagram cookies including `sessionid`; the server wrote them to a Netscape
+file; `yt-dlp --cookies` authenticated against a saved Reel and the media stage
+downloaded it unattended (VP9 1080x1920, AAC, 43.4 s, 18.2 MB) with the `items`
+row advancing `pending -> media` and a `media` row recorded. The Instagram media
+path is proven.
+
+Two findings from that verification change later phases:
+
+1. **`gallery-dl` is close to dead weight for this archive.** Paging 42 saved
+   posts returned reels exclusively — no image posts, no carousels. The
+   downloader routing stays (a saved image post would still work), but the
+   gallery-dl branch is effectively untravelled in practice.
+
+2. **Whisper, not the vision model, is the critical path for Phase 2.** An
+   all-video archive is searchable only to the extent its audio is transcribed.
+   `qwen3-vl-8b` matters far less than this spec assumed when it weighted
+   vision description equally with transcription.
 
 Standing risks:
 
