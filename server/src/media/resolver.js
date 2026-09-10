@@ -6,6 +6,31 @@ import { galleryDlPath } from './gallerydl.js';
 const VIDEO_KINDS = new Set(['reel', 'tweet', 'thread', 'article']);
 const AUTH_PATTERNS = [/login required/i, /rate.?limit/i, /checkpoint/i, /challenge_required/i];
 
+// Most posts on X are text. yt-dlp reports that by exiting NON-ZERO, which
+// naively reads as a failed download — real data had 8 of 17 tweets parked in
+// `failed`, half of them ordinary text tweets, making the archive look broken
+// when nothing was wrong. These say "there is nothing here to download", which
+// is an outcome, not an error.
+const NO_MEDIA_PATTERNS = [
+  /no video could be found/i,
+  /no video formats found/i,
+  /there'?s no video/i,
+  /no results for/i,          // gallery-dl
+  /unable to extract.*media/i,
+];
+
+/**
+ * When a tweet carries no native video, yt-dlp follows the link inside it and
+ * fails on THAT url instead. The tweet still simply has no media of its own.
+ * An "Unsupported URL" naming the item's own url is a genuine failure; one
+ * naming any other url means the downloader wandered off to a linked site.
+ */
+function isFollowedLinkMiss(stderr, itemUrl) {
+  const m = stderr.match(/Unsupported URL:\s*(\S+)/i);
+  if (!m) return false;
+  return m[1].replace(/\/+$/, '') !== String(itemUrl).replace(/\/+$/, '');
+}
+
 export function chooseDownloader(item) {
   if (item.platform === 'instagram' && !VIDEO_KINDS.has(item.kind)) return 'gallery-dl';
   return 'yt-dlp';
@@ -67,8 +92,15 @@ export async function downloadItem(item, { config, run = defaultRun }) {
   const { code, stderr } = await run(cmd, args);
 
   if (code !== 0) {
-    const errorKind = AUTH_PATTERNS.some((re) => re.test(stderr)) ? 'auth_expired' : 'download_failed';
-    return { ok: false, files: [], error: stderr.trim().slice(0, 500), errorKind };
+    // Auth first: an expired session can surface alongside other noise, and
+    // its fix is specific (log back in), so it must never be masked.
+    if (AUTH_PATTERNS.some((re) => re.test(stderr))) {
+      return { ok: false, files: [], error: stderr.trim().slice(0, 500), errorKind: 'auth_expired' };
+    }
+    if (NO_MEDIA_PATTERNS.some((re) => re.test(stderr)) || isFollowedLinkMiss(stderr, item.url)) {
+      return { ok: true, files: [], noMedia: true, note: stderr.trim().slice(0, 200) };
+    }
+    return { ok: false, files: [], error: stderr.trim().slice(0, 500), errorKind: 'download_failed' };
   }
 
   const files = fs.readdirSync(itemDir).map((name) => {
@@ -77,8 +109,8 @@ export async function downloadItem(item, { config, run = defaultRun }) {
   });
 
   if (files.length === 0) {
-    return { ok: false, files: [], error: 'downloader exited 0 but produced no files',
-             errorKind: 'download_failed' };
+    // A clean exit that produced nothing means there was nothing to fetch.
+    return { ok: true, files: [], noMedia: true, note: 'downloader exited 0 with no files' };
   }
   return { ok: true, files };
 }

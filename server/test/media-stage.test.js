@@ -88,3 +88,64 @@ test('every attempt is logged to job_runs', async () => {
     assert.equal(row.status, 'ok');
   } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ── items with no media advance normally ─────────────────────────────
+//
+// A text tweet is a perfectly good archived item. It must reach Phase 2
+// enrichment — where text tweets matter most — rather than parking in
+// `failed` and being excluded from every later stage.
+
+const noMediaRun = async () => ({
+  code: 1, stdout: '',
+  stderr: 'ERROR: [twitter] 209: No video could be found in this tweet',
+});
+
+test('a text tweet advances to media with no media rows, not to failed', async () => {
+  const { dir, db, config } = harness();
+  try {
+    db.prepare("INSERT INTO items(platform,kind,url) VALUES ('twitter','tweet','https://x.com/a/status/1')").run();
+    const out = await runMediaStage(db, { config, run: noMediaRun, limit: 10 });
+    assert.equal(out.succeeded, 1);
+    assert.equal(out.failed, 0);
+    const row = db.prepare('SELECT state, attempts, state_error FROM items WHERE id = 1').get();
+    assert.equal(row.state, 'media');
+    assert.equal(row.attempts, 0, 'no media is not a retryable failure');
+    assert.equal(row.state_error, null);
+    assert.equal(db.prepare('SELECT count(*) c FROM media').get().c, 0);
+  } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a no-media item is not reprocessed on the next drain', async () => {
+  const { dir, db, config } = harness();
+  try {
+    db.prepare("INSERT INTO items(platform,kind,url) VALUES ('twitter','tweet','https://x.com/a/status/1')").run();
+    await runMediaStage(db, { config, run: noMediaRun, limit: 10 });
+    const again = await runMediaStage(db, { config, run: noMediaRun, limit: 10 });
+    assert.equal(again.processed, 0);
+  } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a no-media outcome is logged as ok, with the reason preserved', async () => {
+  const { dir, db, config } = harness();
+  try {
+    db.prepare("INSERT INTO items(platform,kind,url) VALUES ('twitter','tweet','https://x.com/a/status/1')").run();
+    await runMediaStage(db, { config, run: noMediaRun, limit: 10 });
+    const row = db.prepare('SELECT stage, status, error FROM job_runs WHERE item_id = 1').get();
+    assert.equal(row.status, 'ok');
+    assert.match(row.error ?? '', /no_media/,
+      'the reason should still be inspectable even though it is not a failure');
+  } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a genuine failure still parks after three attempts', async () => {
+  // Guards against the no-media change swallowing real errors.
+  const { dir, db, config } = harness();
+  const brokenRun = async () => ({ code: 1, stdout: '', stderr: 'ERROR: HTTP Error 500: Server Error' });
+  try {
+    db.prepare("INSERT INTO items(platform,kind,url) VALUES ('twitter','tweet','https://x.com/a/status/1')").run();
+    for (let i = 0; i < 3; i++) await runMediaStage(db, { config, run: brokenRun, limit: 10 });
+    const row = db.prepare('SELECT state, attempts FROM items WHERE id = 1').get();
+    assert.equal(row.state, 'failed');
+    assert.equal(row.attempts, 3);
+  } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});

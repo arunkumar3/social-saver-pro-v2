@@ -36,7 +36,11 @@ export async function runMediaStage(db, { config, run, limit = 25 }) {
         addMedia.run(item.id, f.kind, f.path, f.bytes, chooseDownloader(item));
       }
       markOk.run(item.id);
-      logRun.run(item.id, 'media', 'ok', null, ms);
+      // A no-media outcome is a success, but keep its reason on the job_runs
+      // row: "why does this tweet have no video" is a real question later, and
+      // the item row itself carries no error because nothing went wrong.
+      logRun.run(item.id, 'media', 'ok',
+        result.noMedia ? `no_media: ${result.note ?? ''}`.trim() : null, ms);
       succeeded++;
     } else {
       // Persist the same "<errorKind>: <detail>" format used for job_runs.error

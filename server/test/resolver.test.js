@@ -182,3 +182,89 @@ test('item.id === 0 is a legitimate falsy id and still works normally', async ()
   assert.ok(fs.existsSync(path.join(dir, '0')), 'the "0" item directory should have been created');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ── "no media" is an outcome, not a failure ──────────────────────────
+//
+// Most tweets are text. yt-dlp reports that by exiting non-zero with "No
+// video could be found in this tweet", which the resolver used to classify
+// as download_failed. Real data had 8 of 17 tweets parked in `failed` that
+// way, four of them perfectly good text tweets — an archive that looked 44%
+// broken when nothing was wrong.
+
+test('a tweet with no video reports no_media, not a failure', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-nm-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  const run = async () => ({
+    code: 1, stdout: '',
+    stderr: 'ERROR: [twitter] 2096983157832847566: No video could be found in this tweet',
+  });
+  const out = await downloadItem(
+    { id: 40, platform: 'twitter', kind: 'tweet', url: 'https://x.com/a/status/1' },
+    { config, run });
+  assert.equal(out.ok, true, 'no media is a successful outcome');
+  assert.equal(out.noMedia, true);
+  assert.deepEqual(out.files, []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('"No video formats found" is also no_media', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-nm-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  const run = async () => ({ code: 1, stdout: '', stderr: 'ERROR: [twitter] 209: No video formats found!' });
+  const out = await downloadItem(
+    { id: 41, platform: 'twitter', kind: 'thread', url: 'https://x.com/a/status/2' },
+    { config, run });
+  assert.equal(out.ok, true);
+  assert.equal(out.noMedia, true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('an Unsupported URL naming a DIFFERENT url means yt-dlp followed an outbound link', async () => {
+  // The tweet had no native video, so yt-dlp followed the link in it.
+  // That is still "this tweet has no media", not a broken download.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-nm-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  const run = async () => ({ code: 1, stdout: '', stderr: 'ERROR: Unsupported URL: https://inhobot.com/' });
+  const out = await downloadItem(
+    { id: 42, platform: 'twitter', kind: 'tweet', url: 'https://x.com/a/status/3' },
+    { config, run });
+  assert.equal(out.ok, true);
+  assert.equal(out.noMedia, true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('an Unsupported URL naming the ITEM url is a real failure', async () => {
+  // Here the downloader genuinely cannot handle the thing we asked for.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-nm-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  const url = 'https://x.com/a/status/4';
+  const run = async () => ({ code: 1, stdout: '', stderr: `ERROR: Unsupported URL: ${url}` });
+  const out = await downloadItem({ id: 43, platform: 'twitter', kind: 'tweet', url }, { config, run });
+  assert.equal(out.ok, false);
+  assert.equal(out.errorKind, 'download_failed');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('an expired session is still auth_expired, never no_media', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-nm-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  const run = async () => ({ code: 1, stdout: '', stderr: 'ERROR: login required to access this content' });
+  const out = await downloadItem(
+    { id: 44, platform: 'instagram', kind: 'reel', url: 'https://instagram.com/reel/x/' },
+    { config, run });
+  assert.equal(out.ok, false);
+  assert.equal(out.errorKind, 'auth_expired');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('exit 0 with no files produced is no_media, not a failure', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-nm-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  const run = async () => ({ code: 0, stdout: '', stderr: '' });
+  const out = await downloadItem(
+    { id: 45, platform: 'twitter', kind: 'tweet', url: 'https://x.com/a/status/5' },
+    { config, run });
+  assert.equal(out.ok, true);
+  assert.equal(out.noMedia, true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
