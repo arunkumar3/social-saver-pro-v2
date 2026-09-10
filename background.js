@@ -1,195 +1,55 @@
 /**
  * Social Saver Pro v2 - Background Service Worker
- * Handles: Supabase saves, midnight alarm, bookmark sync
+ * Handles: local-server saves, midnight alarm, bookmark sync
  */
+
+import "./api.js";
+import "./config.js";
 
 // ═══════════════════════════════════════════════════════════════
 // CONFIG (loaded from storage, set via popup)
 // ═══════════════════════════════════════════════════════════════
 
 let config = {
-  supabaseUrl: "",
-  supabaseAnonKey: "",
   syncHour: 9,
   syncMinute: 0,
 };
 
 async function loadConfig() {
-  const stored = await chrome.storage.local.get(["supabaseUrl", "supabaseAnonKey", "syncHour", "syncMinute"]);
-  config.supabaseUrl = stored.supabaseUrl || "";
-  config.supabaseAnonKey = stored.supabaseAnonKey || "";
+  const stored = await chrome.storage.local.get(["syncHour", "syncMinute"]);
   config.syncHour = stored.syncHour ?? 0;
   config.syncMinute = stored.syncMinute ?? 0;
   return config;
 }
 
-function isConfigured() {
-  return config.supabaseUrl && config.supabaseAnonKey;
-}
-
 // ═══════════════════════════════════════════════════════════════
-// SUPABASE CLIENT (lightweight, no SDK needed)
-// ═══════════════════════════════════════════════════════════════
-
-async function supabaseInsert(table, data) {
-  if (!isConfigured()) throw new Error("Supabase not configured");
-
-  const response = await fetch(`${config.supabaseUrl}/rest/v1/${table}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "apikey": config.supabaseAnonKey,
-      "Authorization": `Bearer ${config.supabaseAnonKey}`,
-      "Prefer": "return=representation",
-    },
-    body: JSON.stringify(data),
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Supabase insert failed: ${response.status} - ${err}`);
-  }
-
-  return response.json();
-}
-
-async function supabaseUpdate(table, id, data) {
-  if (!isConfigured()) throw new Error("Supabase not configured");
-
-  const response = await fetch(`${config.supabaseUrl}/rest/v1/${table}?id=eq.${id}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      "apikey": config.supabaseAnonKey,
-      "Authorization": `Bearer ${config.supabaseAnonKey}`,
-      "Prefer": "return=representation",
-    },
-    body: JSON.stringify(data),
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Supabase update failed: ${response.status} - ${err}`);
-  }
-
-  return response.json();
-}
-
-async function supabaseSelect(table, query = "") {
-  if (!isConfigured()) throw new Error("Supabase not configured");
-
-  const response = await fetch(`${config.supabaseUrl}/rest/v1/${table}?${query}`, {
-    headers: {
-      "apikey": config.supabaseAnonKey,
-      "Authorization": `Bearer ${config.supabaseAnonKey}`,
-    },
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Supabase select failed: ${response.status} - ${err}`);
-  }
-
-  return response.json();
-}
-
-// ═══════════════════════════════════════════════════════════════
-// SAVE CONTENT TO SUPABASE
+// SAVE CONTENT TO THE LOCAL SERVER
 // ═══════════════════════════════════════════════════════════════
 
 async function saveContent(data) {
-  await loadConfig();
+  const newFullText =
+    data.fullText || (data.tweets ? data.tweets.map((t) => t.text).join("\n\n") : "");
 
-  if (!isConfigured()) {
-    return { success: false, error: "Please configure Supabase in the extension settings" };
-  }
+  const item = {
+    platform: data.platform || "twitter",
+    kind: data.type || "tweet",
+    url: data.url,
+    externalId: data.externalId || null,
+    author: data.author || "",
+    authorHandle: data.authorHandle || "",
+    title: data.title || "",
+    caption: newFullText,
+    sourceDate: data.date || null,
+    mediaUrls: data.images || [],
+  };
 
-  try {
-    // Build the new content
-    const newFullText = data.fullText || (data.tweets ? data.tweets.map((t) => t.text).join("\n\n") : "");
-    const newType = data.type || "tweet";
+  const result = await SSPApi.ingest([item]);
 
-    // Check for duplicate by URL
-    const existing = await supabaseSelect(
-      "bookmarks",
-      `url=eq.${encodeURIComponent(data.url)}&select=id,type,full_text`
-    );
-
-    if (existing && existing.length > 0) {
-      const old = existing[0];
-      // Determine if new data is richer:
-      // 1. Type upgrade (thread > tweet) always wins
-      // 2. Same type: update only if new text is longer
-      const isTypeUpgrade = newType === "thread" && old.type === "tweet";
-      const isLongerText = newFullText.length > (old.full_text || "").length;
-
-      if (isTypeUpgrade || isLongerText) {
-        const updatedFields = {
-          type: newType,
-          title: data.title || "",
-          author: data.author || "",
-          author_handle: data.authorHandle || "",
-          full_text: newFullText,
-          images: data.images || [],
-          source_date: data.date || null,
-          ai_processed: false, // Re-trigger AI on updated content
-        };
-        await supabaseUpdate("bookmarks", old.id, updatedFields);
-        console.log(`[SSP] Updated existing bookmark ${old.id} (${old.type} → ${newType})`);
-
-        // Re-trigger AI processing for updated content
-        triggerAIProcessing(old.id).catch((err) =>
-          console.warn("[SSP] AI processing trigger failed:", err)
-        );
-
-        return { success: true, message: "Updated", id: old.id };
-      }
-
-      return { success: true, message: "Already saved", id: old.id };
-    }
-
-    // Build the bookmark record for new insert
-    const record = {
-      url: data.url,
-      type: newType,
-      title: data.title || "",
-      author: data.author || "",
-      author_handle: data.authorHandle || "",
-      full_text: newFullText,
-      images: data.images || [],
-      source_date: data.date || null,
-      saved_at: new Date().toISOString(),
-      // AI fields — will be populated by Edge Function
-      category: null,
-      action_item: null,
-      ai_processed: false,
-    };
-
-    const result = await supabaseInsert("bookmarks", record);
-
-    // Trigger AI processing via Edge Function (fire and forget)
-    triggerAIProcessing(result[0]?.id).catch((err) =>
-      console.warn("[SSP] AI processing trigger failed:", err)
-    );
-
-    return { success: true, id: result[0]?.id };
-  } catch (err) {
-    console.error("[SSP] Save error:", err);
-    return { success: false, error: err.message };
-  }
-}
-
-async function triggerAIProcessing(bookmarkId) {
-  if (!bookmarkId || !isConfigured()) return;
-
-  await fetch(`${config.supabaseUrl}/functions/v1/process-bookmark`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${config.supabaseAnonKey}`,
-    },
-    body: JSON.stringify({ bookmarkId }),
-  });
+  if (result.queued) return { success: true, message: "Queued" };
+  if (result.updated > 0) return { success: true, message: "Updated" };
+  if (result.skipped > 0) return { success: true, message: "Already saved" };
+  if (result.rejected > 0) return { success: false, error: "Server rejected the item" };
+  return { success: true, message: "Saved" };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -217,14 +77,14 @@ async function setupSyncAlarm() {
   console.log("[SSP] Sync alarm set for:", next.toLocaleString());
 }
 
+// Drain anything queued while the local server was unreachable.
+chrome.runtime.onStartup.addListener(() => SSPApi.flushQueue());
+chrome.runtime.onInstalled.addListener(() => SSPApi.flushQueue());
+
 // Alarm fires → sync starts immediately (no notification prompt)
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === "daily-sync") {
     await loadConfig();
-    if (!isConfigured()) {
-      console.warn("[SSP] Sync skipped — Supabase not configured");
-      return;
-    }
     performBookmarkSync();
   }
 });
@@ -310,25 +170,16 @@ async function performBookmarkSync() {
         message: "No bookmarks found to sync.",
         priority: 1,
       });
-      await chrome.storage.local.set({ lastSyncTime: new Date().toISOString() });
+      await chrome.storage.local.set({ ssp_last_sync: Date.now() });
       return;
     }
 
-    // ── Phase 1.5: Filter out already-complete bookmarks ──
+    // ── Phase 1.5: Filter out bookmarks the server already has ──
     const urls = bookmarkURLs.map((b) => b.url);
     let existingComplete = new Set();
     try {
-      // Query bookmarks that already have full content and AI processing
-      const existing = await supabaseSelect(
-        "bookmarks",
-        `url=in.(${urls.map((u) => `"${encodeURIComponent(u)}"`).join(",")})`
-        + `&select=url,full_text,ai_processed`
-      );
-      for (const row of existing) {
-        if (row.full_text && row.full_text.length > 200 && row.ai_processed) {
-          existingComplete.add(row.url);
-        }
-      }
+      const known = await SSPApi.knownUrls(urls);
+      existingComplete = new Set(known);
     } catch (err) {
       console.warn("[SSP] Could not filter existing bookmarks:", err);
     }
@@ -340,70 +191,110 @@ async function performBookmarkSync() {
     updateSyncNotification(0, toProcess.length, `Syncing bookmarks... (0 of ${toProcess.length})`);
 
     // ── Phase 2: Open each URL individually for full extraction ──
+    // Tabs are opened in a dedicated, unfocused window so the sync never
+    // steals the user's focus. The window is unfocused (not minimized) so
+    // its timers aren't throttled and X can actually hydrate.
     let saved = 0;
     let updated = 0;
     let failed = 0;
 
-    for (let i = 0; i < toProcess.length; i++) {
-      const bm = toProcess[i];
-      updateSyncNotification(i + 1, toProcess.length);
+    const syncWindow = await chrome.windows.create({
+      url: "about:blank",
+      focused: false,
+      width: SSP_CONFIG.SYNC_WINDOW_WIDTH,
+      height: SSP_CONFIG.SYNC_WINDOW_HEIGHT,
+    });
 
-      try {
-        const tab = await chrome.tabs.create({ url: bm.url, active: true });
-        await waitForTabLoad(tab.id);
-        await new Promise((r) => setTimeout(r, TAB_LOAD_WAIT));
-        await ensureContentScript(tab.id);
+    let cursor = 0;
 
-        // Auto-scroll to load lazy content (threads, articles), then extract
-        let response = await chrome.tabs.sendMessage(tab.id, {
-          action: "autoScrollAndExtract",
-        });
+    async function worker() {
+      while (cursor < toProcess.length) {
+        const i = cursor++;
+        const bm = toProcess[i];
+        updateSyncNotification(i + 1, toProcess.length);
 
-        let content = response?.content;
-        console.log(`[SSP] [${i + 1}/${toProcess.length}] ${bm.url} → ${content?.fullText?.length || 0} chars`);
-
-        // Retry once if content came back empty (X may still be hydrating)
-        if (!content?.fullText || content.fullText.length === 0) {
-          console.log(`[SSP] Retry: waiting ${RETRY_WAIT}ms for ${bm.url}`);
-          await new Promise((r) => setTimeout(r, RETRY_WAIT));
-          response = await chrome.tabs.sendMessage(tab.id, {
-            action: "autoScrollAndExtract",
-          });
-          content = response?.content;
-          console.log(`[SSP] Retry result: ${content?.fullText?.length || 0} chars`);
-        }
-
-        if (content && content.fullText && content.fullText.length > 0) {
-          const result = await saveContent(content);
-          if (result.success) {
-            if (result.message === "Updated") updated++;
-            else if (result.message !== "Already saved") saved++;
-          }
-        } else {
-          // Fallback: save with metadata from Phase 1
-          const fallback = {
+        let tab;
+        try {
+          tab = await chrome.tabs.create({
             url: bm.url,
-            type: "tweet",
-            title: "",
-            author: bm.author || "",
-            authorHandle: bm.authorHandle || "",
-            fullText: "",
-            images: [],
-            date: null,
-          };
-          await saveContent(fallback);
+            active: true,
+            windowId: syncWindow.id,
+          });
+          try {
+            await waitForTabLoad(tab.id);
+            await new Promise((r) => setTimeout(r, TAB_LOAD_WAIT));
+            await ensureContentScript(tab.id);
+
+            // Auto-scroll to load lazy content (threads, articles), then extract
+            let response = await chrome.tabs.sendMessage(tab.id, {
+              action: "autoScrollAndExtract",
+            });
+
+            let content = response?.content;
+            console.log(`[SSP] [${i + 1}/${toProcess.length}] ${bm.url} → ${content?.fullText?.length || 0} chars`);
+
+            // Retry once if content came back empty (X may still be hydrating)
+            if (!content?.fullText || content.fullText.length === 0) {
+              console.log(`[SSP] Retry: waiting ${RETRY_WAIT}ms for ${bm.url}`);
+              await new Promise((r) => setTimeout(r, RETRY_WAIT));
+              response = await chrome.tabs.sendMessage(tab.id, {
+                action: "autoScrollAndExtract",
+              });
+              content = response?.content;
+              console.log(`[SSP] Retry result: ${content?.fullText?.length || 0} chars`);
+            }
+
+            if (content && content.fullText && content.fullText.length > 0) {
+              const result = await saveContent(content);
+              if (result.success) {
+                if (result.message === "Updated") updated++;
+                else if (result.message !== "Already saved") saved++;
+              }
+            } else {
+              // Fallback: save with metadata from Phase 1
+              const fallback = {
+                url: bm.url,
+                type: "tweet",
+                title: "",
+                author: bm.author || "",
+                authorHandle: bm.authorHandle || "",
+                fullText: "",
+                images: [],
+                date: null,
+              };
+              await saveContent(fallback);
+              failed++;
+            }
+          } finally {
+            if (tab) {
+              try {
+                await chrome.tabs.remove(tab.id);
+              } catch {
+                /* tab may already be closed/discarded */
+              }
+            }
+          }
+        } catch (err) {
+          console.warn(`[SSP] Failed to process ${bm.url}:`, err);
           failed++;
         }
 
-        await chrome.tabs.remove(tab.id);
-      } catch (err) {
-        console.warn(`[SSP] Failed to process ${bm.url}:`, err);
-        failed++;
+        // Delay between tabs to be gentle on X
+        if (i < toProcess.length - 1) {
+          await new Promise((r) => setTimeout(r, BETWEEN_TAB_DELAY));
+        }
       }
+    }
 
-      // Delay between tabs to be gentle on X
-      if (i < toProcess.length - 1) {
-        await new Promise((r) => setTimeout(r, BETWEEN_TAB_DELAY));
+    try {
+      await Promise.all(
+        Array.from({ length: Math.min(SSP_CONFIG.SYNC_CONCURRENCY, toProcess.length) }, worker)
+      );
+    } finally {
+      try {
+        await chrome.windows.remove(syncWindow.id);
+      } catch {
+        /* already closed */
       }
     }
 
@@ -424,7 +315,7 @@ async function performBookmarkSync() {
       priority: 1,
     });
 
-    await chrome.storage.local.set({ lastSyncTime: new Date().toISOString() });
+    await chrome.storage.local.set({ ssp_last_sync: Date.now() });
   } catch (err) {
     console.error("[SSP] Bookmark sync failed:", err);
     chrome.notifications.clear("sync-progress");
@@ -441,6 +332,59 @@ async function performBookmarkSync() {
 // ═══════════════════════════════════════════════════════════════
 // MESSAGE HANDLER
 // ═══════════════════════════════════════════════════════════════
+
+async function exportInstagramCookies() {
+  try {
+    const cookies = await chrome.cookies.getAll({ domain: "instagram.com" });
+    if (!cookies.length) {
+      return { ok: false, error: "No Instagram cookies found — log in to Instagram in Chrome first." };
+    }
+    const res = await fetch(`${SSPApi.baseUrl}/cookies`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cookies }),
+    });
+    if (!res.ok) return { ok: false, error: `Server returned ${res.status}` };
+    const body = await res.json();
+    console.log(`[SSP] exported ${body.count} Instagram cookies`);
+    return { ok: true, count: body.count };
+  } catch (err) {
+    return { ok: false, error: `Server unreachable: ${err.message}` };
+  }
+}
+
+async function syncInstagram() {
+  const cookieResult = await exportInstagramCookies();
+  if (!cookieResult.ok) return { ok: false, error: cookieResult.error };
+
+  const tab = await chrome.tabs.create({
+    url: "https://www.instagram.com/saved/all-posts/",
+    active: true,
+  });
+  try {
+    await waitForTabLoad(tab.id);
+    await new Promise((r) => setTimeout(r, 3000));
+
+    const response = await chrome.tabs.sendMessage(tab.id, {
+      action: "collectInstagramSaved",
+    });
+    const items = response?.items ?? [];
+    if (items.length === 0) {
+      return { ok: false, error: "No saved posts found — are you logged in?" };
+    }
+
+    const result = await SSPApi.ingest(items);
+    chrome.notifications.create("ig-sync-done", {
+      type: "basic",
+      iconUrl: "icons/icon128.png",
+      title: "Instagram sync complete",
+      message: `Collected ${items.length} saved posts`,
+    });
+    return { ok: true, collected: items.length, ...result };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "saveContent") {
@@ -463,6 +407,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.action === "exportCookies") {
+    exportInstagramCookies().then(sendResponse);
+    return true;
+  }
+
+  if (msg.action === "syncInstagram") {
+    syncInstagram().then(sendResponse);
+    return true;
+  }
+
   if (msg.action === "saveConfig") {
     chrome.storage.local.set(msg.config).then(() => {
       loadConfig().then(() => {
@@ -475,55 +429,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 async function getStats() {
-  await loadConfig();
-  const lastSync = (await chrome.storage.local.get("lastSyncTime")).lastSyncTime;
-
-  if (!isConfigured()) {
-    return { configured: false, lastSync };
-  }
-
+  const stored = await chrome.storage.local.get(["ssp_pending_queue", "ssp_last_sync"]);
+  const queue = stored.ssp_pending_queue ?? [];
+  const lastSync = stored.ssp_last_sync ?? null;
   try {
-    // Get count of bookmarks
-    const response = await fetch(
-      `${config.supabaseUrl}/rest/v1/bookmarks?select=id&limit=1`,
-      {
-        headers: {
-          "apikey": config.supabaseAnonKey,
-          "Authorization": `Bearer ${config.supabaseAnonKey}`,
-          "Prefer": "count=exact",
-        },
-      }
-    );
-
-    const count = response.headers.get("content-range")?.split("/")[1] || "0";
-    return { configured: true, totalBookmarks: parseInt(count), lastSync };
+    const res = await fetch(`${SSPApi.baseUrl}/health`);
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    return { connected: true, pending: queue.length, lastSync };
   } catch {
-    return { configured: true, totalBookmarks: "?", lastSync };
+    return { connected: false, pending: queue.length, lastSync };
   }
 }
 
 async function testConnection() {
-  await loadConfig();
-  if (!isConfigured()) {
-    return { success: false, error: "Missing Supabase URL or key" };
-  }
-
   try {
-    const response = await fetch(`${config.supabaseUrl}/rest/v1/bookmarks?select=id&limit=1`, {
-      headers: {
-        "apikey": config.supabaseAnonKey,
-        "Authorization": `Bearer ${config.supabaseAnonKey}`,
-      },
-    });
-
-    if (response.ok) {
-      return { success: true };
-    } else {
-      const err = await response.text();
-      return { success: false, error: `${response.status}: ${err}` };
-    }
+    const res = await fetch(`${SSPApi.baseUrl}/health`);
+    if (!res.ok) return { success: false, error: `Server returned ${res.status}` };
+    return { success: true, message: "Local server reachable" };
   } catch (err) {
-    return { success: false, error: err.message };
+    return { success: false, error: "Local server not running — start it and retry." };
   }
 }
 

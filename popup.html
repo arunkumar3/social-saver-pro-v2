@@ -81,75 +81,6 @@ body { width: 340px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
   color: #d4d4d4;
 }
 .btn-secondary:hover { background: #2a2a2a; }
-
-/* Settings */
-.settings {
-  padding: 0 16px 16px;
-  display: none;
-}
-.settings.open { display: block; }
-.settings h3 {
-  font-size: 12px;
-  color: #737373;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 10px;
-}
-.field {
-  margin-bottom: 10px;
-}
-.field label {
-  display: block;
-  font-size: 11px;
-  color: #a3a3a3;
-  margin-bottom: 4px;
-}
-.field input {
-  width: 100%;
-  padding: 8px 10px;
-  background: #111;
-  border: 1px solid #2a2a2a;
-  border-radius: 6px;
-  color: #e5e5e5;
-  font-size: 12px;
-  font-family: "SF Mono", Menlo, monospace;
-  outline: none;
-  transition: border-color 0.15s;
-}
-.field input:focus { border-color: #3b82f6; }
-.field input::placeholder { color: #525252; }
-
-.settings-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-/* Toggle */
-.toggle-settings {
-  width: 100%;
-  padding: 10px;
-  background: none;
-  border: none;
-  border-top: 1px solid #1f1f1f;
-  color: #737373;
-  font-size: 11px;
-  cursor: pointer;
-  transition: color 0.15s;
-}
-.toggle-settings:hover { color: #a3a3a3; }
-
-/* Feedback messages */
-.feedback {
-  font-size: 11px;
-  padding: 8px 12px;
-  border-radius: 6px;
-  margin: 0 16px 10px;
-  display: none;
-}
-.feedback.show { display: block; }
-.feedback.success { background: #052e16; color: #4ade80; border: 1px solid #14532d; }
-.feedback.error { background: #2a0a0a; color: #f87171; border: 1px solid #450a0a; }
 </style>
 </head>
 <body>
@@ -174,17 +105,15 @@ body { width: 340px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
       <span id="conn-text">Checking...</span>
     </span>
   </div>
-  <div class="status-row">
-    <span class="status-label">Saved</span>
-    <span class="status-value" id="total-count">—</span>
+  <div class="status-row" id="pending-row" hidden>
+    <span class="status-label">Waiting to sync</span>
+    <span class="status-value" id="pending-count">0</span>
   </div>
   <div class="status-row">
     <span class="status-label">Last sync</span>
     <span class="status-value" id="last-sync">Never</span>
   </div>
 </div>
-
-<div class="feedback" id="feedback"></div>
 
 <div class="actions">
   <button class="btn btn-primary" id="sync-btn" disabled>
@@ -206,23 +135,16 @@ body { width: 340px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
   </button>
 </div>
 
-<div class="settings" id="settings-panel">
-  <h3>Supabase Configuration</h3>
-  <div class="field">
-    <label>Project URL</label>
-    <input type="text" id="input-url" placeholder="https://xxxxx.supabase.co" />
-  </div>
-  <div class="field">
-    <label>Anon / Public Key</label>
-    <input type="password" id="input-key" placeholder="eyJhbGciOi..." />
-  </div>
-  <div class="settings-actions">
-    <button class="btn btn-primary" id="save-config-btn">Save & Test</button>
-    <button class="btn btn-secondary" id="cancel-config-btn">Cancel</button>
-  </div>
+<div class="actions">
+  <button class="btn btn-secondary" id="ig-sync-btn">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="2" y="2" width="20" height="20" rx="5" ry="5"/>
+      <path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/>
+      <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"/>
+    </svg>
+    Sync Instagram
+  </button>
 </div>
-
-<button class="toggle-settings" id="toggle-settings">⚙ Settings</button>
 
 <script src="popup.js"></script>
 </body>

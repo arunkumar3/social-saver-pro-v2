@@ -391,36 +391,59 @@
 
   // Collect visible bookmark items from current DOM into an accumulator Map.
   // Always overwrites on re-encounter — re-rendered nodes may have richer content.
-  function collectVisibleBookmarks(accumulator) {
+  // Returns { consecutiveOld } — count of consecutive bookmarks older than cutoff
+  // seen at the tail of this batch (for early-stop logic).
+  function collectVisibleBookmarks(accumulator, cutoffDate) {
     const articles = document.querySelectorAll('article[data-testid="tweet"]');
+    let consecutiveOld = 0;
 
     for (const article of articles) {
       const data = extractTweetData(article);
       if (!data.text || data.text.length < (SSP_CONFIG?.MIN_TWEET_LENGTH || 30)) continue;
 
-      const timeLink = article.querySelector("time")?.closest("a");
+      const timeEl = article.querySelector("time");
+      const timeLink = timeEl?.closest("a");
       const tweetUrl = timeLink ? "https://x.com" + timeLink.getAttribute("href") : "";
+      if (!tweetUrl) continue;
 
-      if (tweetUrl) {
-        // Always overwrite — latest render may have expanded t.co links, loaded images
-        accumulator.set(tweetUrl, {
-          type: "tweet",
-          url: tweetUrl,
-          title: generateTitle(data.text),
-          author: data.author,
-          authorHandle: data.authorHandle,
-          date: data.date,
-          fullText: data.text,
-          images: data.images,
-        });
+      // Check age — skip bookmarks older than cutoff
+      if (cutoffDate) {
+        const datetime = timeEl?.getAttribute("datetime");
+        if (datetime) {
+          const sourceDate = new Date(datetime);
+          if (sourceDate < cutoffDate) {
+            consecutiveOld++;
+            continue;
+          }
+        }
       }
+      consecutiveOld = 0;
+
+      // Always overwrite — latest render may have expanded t.co links, loaded images
+      accumulator.set(tweetUrl, {
+        type: "tweet",
+        url: tweetUrl,
+        title: generateTitle(data.text),
+        author: data.author,
+        authorHandle: data.authorHandle,
+        date: data.date,
+        fullText: data.text,
+        images: data.images,
+      });
     }
+
+    return { consecutiveOld };
   }
 
   // Scroll and incrementally collect bookmarks to handle DOM virtualization.
   // Returns accumulated bookmarks as an array.
+  // Only collects bookmarks from the last SYNC_MAX_AGE_DAYS days.
+  // Stops scrolling after 3 consecutive bookmarks older than the cutoff.
   async function scrollAndCollectBookmarks(maxTime) {
     const max = maxTime || SSP_CONFIG?.MAX_SCROLL_TIME || 60000;
+    const maxAgeDays = SSP_CONFIG?.SYNC_MAX_AGE_DAYS || 30;
+    const cutoffDate = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
+    const CONSECUTIVE_OLD_LIMIT = 3;
     const start = Date.now();
     const scrollEl = document.scrollingElement || document.documentElement;
     const accumulator = new Map();
@@ -431,7 +454,11 @@
     const STALE_THRESHOLD = 8;
 
     // Collect initial visible bookmarks
-    collectVisibleBookmarks(accumulator);
+    let { consecutiveOld } = collectVisibleBookmarks(accumulator, cutoffDate);
+    if (consecutiveOld >= CONSECUTIVE_OLD_LIMIT) {
+      console.log(`[SSP] Bookmark scroll: hit ${consecutiveOld} consecutive old bookmarks on initial load, stopping.`);
+      return Array.from(accumulator.values());
+    }
 
     while (Date.now() - start < max) {
       // Scroll to bottom
@@ -445,7 +472,11 @@
       await new Promise((r) => setTimeout(r, 500));
 
       // Collect any newly visible bookmarks
-      collectVisibleBookmarks(accumulator);
+      ({ consecutiveOld } = collectVisibleBookmarks(accumulator, cutoffDate));
+      if (consecutiveOld >= CONSECUTIVE_OLD_LIMIT) {
+        console.log(`[SSP] Bookmark scroll: hit ${consecutiveOld} consecutive old bookmarks, stopping. Collected ${accumulator.size}.`);
+        break;
+      }
 
       const newHeight = scrollEl.scrollHeight;
       const newSeenCount = accumulator.size;
@@ -549,7 +580,7 @@
         return;
       }
 
-      // Send to background service worker for Supabase save
+      // Send to background service worker to save to the local server
       const response = await chrome.runtime.sendMessage({
         action: "saveContent",
         data: content,
@@ -642,10 +673,11 @@
   // BOOKMARK URL EXTRACTION (Phase 1 — lightweight, URLs only)
   // ═══════════════════════════════════════════════════════════════
 
-  // Returns true if all visible bookmarks were collected, false if we hit an old bookmark (before current year)
-  function collectVisibleBookmarkURLs(accumulator) {
+  // Returns { consecutiveOld } — count of consecutive old bookmarks at the
+  // tail of this batch. Bookmarks older than cutoff are skipped (not added).
+  function collectVisibleBookmarkURLs(accumulator, cutoffDate) {
     const articles = document.querySelectorAll('article[data-testid="tweet"]');
-    const currentYear = new Date().getFullYear();
+    let consecutiveOld = 0;
 
     for (const article of articles) {
       const timeEl = article.querySelector("time");
@@ -653,15 +685,18 @@
       const tweetUrl = timeLink ? "https://x.com" + timeLink.getAttribute("href") : "";
       if (!tweetUrl) continue;
 
-      // Check date — skip bookmarks from before current year
-      const datetime = timeEl?.getAttribute("datetime");
-      if (datetime) {
-        const bookmarkYear = new Date(datetime).getFullYear();
-        if (bookmarkYear < currentYear) {
-          console.log(`[SSP] Hit bookmark from ${bookmarkYear}, stopping collection (current year: ${currentYear})`);
-          return false; // Signal to stop scrolling
+      // Check age — skip bookmarks older than cutoff
+      if (cutoffDate) {
+        const datetime = timeEl?.getAttribute("datetime");
+        if (datetime) {
+          const sourceDate = new Date(datetime);
+          if (sourceDate < cutoffDate) {
+            consecutiveOld++;
+            continue;
+          }
         }
       }
+      consecutiveOld = 0;
 
       if (!accumulator.has(tweetUrl)) {
         const userName = article.querySelector('[data-testid="User-Name"]');
@@ -677,11 +712,14 @@
         accumulator.set(tweetUrl, { url: tweetUrl, author, authorHandle });
       }
     }
-    return true; // All visible bookmarks are current year
+    return { consecutiveOld };
   }
 
   async function scrollAndCollectBookmarkURLs(maxTime) {
     const max = maxTime || SSP_CONFIG?.MAX_SCROLL_TIME || 60000;
+    const maxAgeDays = SSP_CONFIG?.SYNC_MAX_AGE_DAYS || 30;
+    const cutoffDate = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000);
+    const CONSECUTIVE_OLD_LIMIT = 3;
     const start = Date.now();
     const scrollEl = document.scrollingElement || document.documentElement;
     const accumulator = new Map();
@@ -691,9 +729,13 @@
     const SCROLL_WAIT = 2000;
     const STALE_THRESHOLD = 8;
 
-    let keepGoing = collectVisibleBookmarkURLs(accumulator);
+    let { consecutiveOld } = collectVisibleBookmarkURLs(accumulator, cutoffDate);
+    if (consecutiveOld >= CONSECUTIVE_OLD_LIMIT) {
+      console.log(`[SSP] URL scroll: hit ${consecutiveOld} consecutive old bookmarks on initial load, stopping.`);
+      return Array.from(accumulator.values());
+    }
 
-    while (keepGoing && Date.now() - start < max) {
+    while (Date.now() - start < max) {
       scrollEl.scrollTop = scrollEl.scrollHeight;
       await new Promise((r) => setTimeout(r, SCROLL_WAIT));
 
@@ -702,9 +744,9 @@
       scrollEl.scrollTop = scrollEl.scrollHeight;
       await new Promise((r) => setTimeout(r, 500));
 
-      keepGoing = collectVisibleBookmarkURLs(accumulator);
-      if (!keepGoing) {
-        console.log(`[SSP] Stopped scrolling: hit bookmarks from previous year. Collected ${accumulator.size} URLs.`);
+      ({ consecutiveOld } = collectVisibleBookmarkURLs(accumulator, cutoffDate));
+      if (consecutiveOld >= CONSECUTIVE_OLD_LIMIT) {
+        console.log(`[SSP] URL scroll: hit ${consecutiveOld} consecutive old bookmarks, stopping. Collected ${accumulator.size} URLs.`);
         break;
       }
 

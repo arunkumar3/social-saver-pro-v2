@@ -9,11 +9,14 @@
     "storage",
     "alarms",
     "notifications",
-    "tabs"
+    "tabs",
+    "cookies"
   ],
   "host_permissions": [
     "https://x.com/*",
-    "https://twitter.com/*"
+    "https://twitter.com/*",
+    "https://*.instagram.com/*",
+    "http://127.0.0.1:8787/*"
   ],
   "background": {
     "service_worker": "background.js",
@@ -32,6 +35,11 @@
       "matches": ["https://x.com/*", "https://twitter.com/*"],
       "js": ["config.js", "content.js"],
       "css": ["content.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.instagram.com/*"],
+      "js": ["instagram.js"],
       "run_at": "document_idle"
     }
   ],
