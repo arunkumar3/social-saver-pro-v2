@@ -353,7 +353,21 @@ async function exportInstagramCookies() {
   }
 }
 
-async function syncInstagram() {
+const IG_STAGED_KEY = "ssp_ig_staged";
+// Used only until the archive has real media to average. One verified reel
+// measured 18.2 MB; treat that as the seed rather than a hard assumption.
+const IG_FALLBACK_BYTES = 18 * 1024 * 1024;
+
+/**
+ * Collect saved-post permalinks and report what a sync WOULD do, without
+ * ingesting anything.
+ *
+ * Ingesting is what starts downloads: the server's media stage drains every
+ * 30 seconds, so anything POSTed to /ingest begins downloading immediately.
+ * The collected list is therefore stashed in chrome.storage and only committed
+ * once the user confirms. The stash also survives the popup being closed.
+ */
+async function previewInstagramSync() {
   const cookieResult = await exportInstagramCookies();
   if (!cookieResult.ok) return { ok: false, error: cookieResult.error };
 
@@ -373,17 +387,67 @@ async function syncInstagram() {
       return { ok: false, error: "No saved posts found — are you logged in?" };
     }
 
-    const result = await SSPApi.ingest(items);
-    chrome.notifications.create("ig-sync-done", {
-      type: "basic",
-      iconUrl: "icons/icon128.png",
-      title: "Instagram sync complete",
-      message: `Collected ${items.length} saved posts`,
-    });
-    return { ok: true, collected: items.length, ...result };
+    // Ask the server which of these it already has. If it is unreachable this
+    // returns [], so the preview degrades to "everything looks new" rather
+    // than silently claiming there is nothing to do.
+    const known = new Set(await SSPApi.knownUrls(items.map((i) => i.url)));
+    const fresh = items.filter((i) => !known.has(i.url));
+
+    await chrome.storage.local.set({ [IG_STAGED_KEY]: fresh });
+
+    let meanBytes = IG_FALLBACK_BYTES;
+    try {
+      const res = await fetch(`${SSPApi.baseUrl}/api/stats`);
+      if (res.ok) {
+        const stats = await res.json();
+        // Instagram's own mean, never the global one. Real data had a 603 MB
+        // tweet video alongside 18 MB reels; the global mean would estimate
+        // this download at roughly seven times its true size.
+        const igMean = stats.media?.meanBytesByPlatform?.instagram;
+        if (igMean > 0) meanBytes = igMean;
+      }
+    } catch {
+      // Estimate stays on the fallback; not worth failing the preview over.
+    }
+
+    return {
+      ok: true,
+      total: items.length,
+      alreadyArchived: items.length - fresh.length,
+      newCount: fresh.length,
+      estBytes: fresh.length * meanBytes,
+      estimateIsSeeded: meanBytes === IG_FALLBACK_BYTES,
+    };
   } catch (err) {
     return { ok: false, error: err.message };
   }
+}
+
+/** Ingest the stashed permalinks. This is the point downloads begin. */
+async function commitInstagramSync() {
+  const stored = await chrome.storage.local.get(IG_STAGED_KEY);
+  const staged = stored[IG_STAGED_KEY] ?? [];
+  if (staged.length === 0) {
+    return { ok: false, error: "Nothing staged — run a preview first." };
+  }
+
+  const result = await SSPApi.ingest(staged);
+  await chrome.storage.local.remove(IG_STAGED_KEY);
+  await chrome.storage.local.set({ ssp_last_sync: new Date().toISOString() });
+
+  chrome.notifications.create("ig-sync-done", {
+    type: "basic",
+    iconUrl: "icons/icon128.png",
+    title: "Instagram sync started",
+    message: `${staged.length} posts queued — media downloads in the background`,
+  });
+  return { ok: true, queued: staged.length, ...result };
+}
+
+/** Discard a staged preview without ingesting it. */
+async function cancelInstagramSync() {
+  await chrome.storage.local.remove(IG_STAGED_KEY);
+  return { ok: true };
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -412,8 +476,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  if (msg.action === "syncInstagram") {
-    syncInstagram().then(sendResponse);
+  if (msg.action === "previewInstagramSync") {
+    previewInstagramSync().then(sendResponse);
+    return true;
+  }
+
+  if (msg.action === "commitInstagramSync") {
+    commitInstagramSync().then(sendResponse);
+    return true;
+  }
+
+  if (msg.action === "cancelInstagramSync") {
+    cancelInstagramSync().then(sendResponse);
     return true;
   }
 

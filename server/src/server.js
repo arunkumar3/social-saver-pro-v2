@@ -5,6 +5,7 @@ import { send } from './http.js';
 import { health } from './routes/health.js';
 import { postCookies } from './routes/cookies.js';
 import { postIngest, postKnownUrls } from './routes/ingest.js';
+import { getStats } from './routes/stats.js';
 
 const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
@@ -55,6 +56,7 @@ export function createServer(deps) {
         return send(res, 403, { error: 'forbidden_origin' });
       }
       if (req.method === 'GET' && url.pathname === '/health') return health(req, res);
+      if (req.method === 'GET' && url.pathname === '/api/stats') return getStats(req, res, deps);
       if (req.method === 'POST' && url.pathname === '/cookies') {
         return await postCookies(req, res, deps);
       }
