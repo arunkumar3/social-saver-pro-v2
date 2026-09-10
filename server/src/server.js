@@ -11,12 +11,28 @@ const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 // Cross-site guard for state-changing requests: a plain `<form
 // enctype="text/plain">` POST from an attacker-controlled page skips CORS
 // preflight entirely, so the only signal available server-side is the
-// Origin header the browser attaches to it. Browsers always send Origin on
-// cross-origin (and same-origin) POSTs, so a present-but-non-loopback Origin
-// is a reliable sign of a cross-site request and gets rejected. Requests
-// with no Origin header at all (the extension service worker's fetch, and
-// tools like curl) are not browser-originated cross-site requests and must
-// keep working.
+// Origin header the browser attaches to it. A present-but-disallowed Origin
+// is a reliable sign of a cross-site request and gets rejected.
+//
+// Three cases are allowed:
+//
+//   1. No Origin at all — curl and other non-browser clients. Not a
+//      browser-originated cross-site request.
+//   2. A loopback origin — the dashboard served from this same server.
+//   3. A `chrome-extension:` origin — OUR extension's service worker.
+//      An MV3 service worker's `fetch` DOES send `Origin:
+//      chrome-extension://<id>`; an earlier version of this guard assumed it
+//      sent none and rejected every save the extension made with 403
+//      forbidden_origin. Origin is set by the browser and cannot be forged
+//      by page script, so this scheme genuinely identifies an extension.
+//
+//      Any installed extension is accepted rather than one pinned id,
+//      because an unpacked extension's id changes with its load path. That
+//      is an accepted trade: reaching this server from another extension
+//      would require the user to have installed a hostile extension AND
+//      granted it localhost host permissions, which is a deeper compromise
+//      than this guard is meant to address. The threat model here is a
+//      drive-by web page, and http(s) origins stay blocked.
 export function isAllowedOrigin(originHeader) {
   if (!originHeader) return true;
   let origin;
@@ -25,6 +41,7 @@ export function isAllowedOrigin(originHeader) {
   } catch {
     return false;
   }
+  if (origin.protocol === 'chrome-extension:') return true;
   return LOOPBACK_HOSTNAMES.has(origin.hostname);
 }
 
