@@ -158,3 +158,16 @@ test('a platform with no sized media is absent rather than zero or NaN', async (
     assert.equal(s.media.meanBytesByPlatform.instagram, undefined);
   } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('stats surfaces the deferred backlog separately from pending', async () => {
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    addItem(db, { url: 'https://instagram.com/p/a/', state: 'deferred' });
+    addItem(db, { url: 'https://instagram.com/p/b/', state: 'deferred' });
+    addItem(db, { url: 'https://instagram.com/p/c/', state: 'pending' });
+    const s = await (await fetch(`${base}/api/stats`)).json();
+    assert.equal(s.queue.deferred, 2);
+    assert.equal(s.queue.pending, 1);
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});

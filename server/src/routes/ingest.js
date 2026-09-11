@@ -31,6 +31,11 @@ function isValidHttpUrl(value) {
 export async function postIngest(req, res, { db }) {
   const body = await readJson(req);
   const items = Array.isArray(body?.items) ? body.items : null;
+  // Deferred ingest: store the metadata now, download the media later.
+  // Items land in `deferred`, which the media stage does not select, so a
+  // large archive becomes searchable immediately without committing to hours
+  // of downloading. POST /api/promote moves them into `pending` in batches.
+  const initialState = body?.deferMedia === true ? 'deferred' : 'pending';
   if (!items) return send(res, 400, { error: 'no_items' });
 
   let inserted = 0, updated = 0, skipped = 0, rejected = 0;
@@ -38,11 +43,11 @@ export async function postIngest(req, res, { db }) {
   const findByUrl = db.prepare('SELECT id, kind, caption FROM items WHERE url = ?');
   const insertItem = db.prepare(`
     INSERT INTO items (platform, kind, url, external_id, author, author_handle,
-                       title, caption, source_date)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+                       title, caption, source_date, state)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const updateItem = db.prepare(`
     UPDATE items SET kind = ?, title = ?, author = ?, author_handle = ?,
-                     caption = ?, source_date = ?, state = 'pending',
+                     caption = ?, source_date = ?, state = ?,
                      updated_at = datetime('now')
     WHERE id = ?`);
   const insertMedia = db.prepare(
@@ -56,7 +61,8 @@ export async function postIngest(req, res, { db }) {
 
     if (!existing) {
       insertItem.run(it.platform, it.kind, it.url, it.externalId ?? null,
-        it.author ?? '', it.authorHandle ?? '', it.title ?? '', caption, it.sourceDate ?? null);
+        it.author ?? '', it.authorHandle ?? '', it.title ?? '', caption,
+        it.sourceDate ?? null, initialState);
       const id = findByUrl.get(it.url).id;
       for (const url of it.mediaUrls ?? []) insertMedia.run(id, 'image', url);
       inserted++;
@@ -72,7 +78,7 @@ export async function postIngest(req, res, { db }) {
       // update on this pass.
       const kind = kindRank(it.kind) >= kindRank(existing.kind) ? it.kind : existing.kind;
       updateItem.run(kind, it.title ?? '', it.author ?? '', it.authorHandle ?? '',
-        caption, it.sourceDate ?? null, existing.id);
+        caption, it.sourceDate ?? null, initialState, existing.id);
       updated++;
     } else {
       skipped++;
@@ -91,4 +97,36 @@ export async function postKnownUrls(req, res, { db }) {
   const placeholders = urls.map(() => '?').join(',');
   const rows = db.prepare(`SELECT url FROM items WHERE url IN (${placeholders})`).all(...urls);
   return send(res, 200, { known: rows.map((r) => r.url) });
+}
+
+/**
+ * POST /api/promote — move deferred items into the download queue.
+ *
+ * A limit is mandatory. Promoting an entire deferred backlog in one call is
+ * exactly the thing deferring exists to prevent: 1,440 Instagram items is
+ * roughly 24 GB and hours of continuous fetching against the user's account.
+ */
+export async function postPromote(req, res, { db }) {
+  const body = await readJson(req);
+  const limit = Number(body?.limit);
+  if (!Number.isInteger(limit) || limit <= 0) {
+    return send(res, 400, { error: 'limit_required' });
+  }
+  const platform = body?.platform;
+  if (platform !== undefined && !VALID_PLATFORMS.has(platform)) {
+    return send(res, 400, { error: 'bad_platform' });
+  }
+
+  const where = platform ? "state = 'deferred' AND platform = ?" : "state = 'deferred'";
+  const params = platform ? [platform, limit] : [limit];
+
+  const info = db.prepare(`
+    UPDATE items SET state = 'pending', updated_at = datetime('now')
+    WHERE id IN (SELECT id FROM items WHERE ${where} ORDER BY id LIMIT ?)`).run(...params);
+
+  const remaining = platform
+    ? db.prepare("SELECT count(*) c FROM items WHERE state='deferred' AND platform=?").get(platform).c
+    : db.prepare("SELECT count(*) c FROM items WHERE state='deferred'").get().c;
+
+  return send(res, 200, { ok: true, promoted: info.changes, remaining });
 }

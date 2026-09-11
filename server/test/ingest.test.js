@@ -164,3 +164,124 @@ test('known-urls returns only urls already stored', async () => {
     assert.deepEqual(out.known, ['https://x.com/a/status/1']);
   } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ── deferred ingest: metadata now, media later ───────────────────────
+//
+// A 1,440-item Instagram archive is ~24 GB and hours of continuous fetching.
+// Ingesting normally starts that immediately, because the media stage drains
+// anything `pending`. Deferred items are searchable straight away and download
+// only when promoted.
+
+test('deferMedia parks items at deferred so the media stage ignores them', async () => {
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    const out = await post(base, '/ingest', {
+      deferMedia: true,
+      items: [{ platform: 'instagram', kind: 'reel', url: 'https://instagram.com/p/a/', caption: 'x' }],
+    });
+    assert.equal(out.inserted, 1);
+    assert.equal(db.prepare('SELECT state FROM items WHERE url = ?')
+      .get('https://instagram.com/p/a/').state, 'deferred');
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('without deferMedia items still land pending, as before', async () => {
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    await post(base, '/ingest', {
+      items: [{ platform: 'instagram', kind: 'reel', url: 'https://instagram.com/p/b/', caption: 'x' }],
+    });
+    assert.equal(db.prepare('SELECT state FROM items WHERE url = ?')
+      .get('https://instagram.com/p/b/').state, 'pending');
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('deferred items are still full-text searchable immediately', async () => {
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    await post(base, '/ingest', {
+      deferMedia: true,
+      items: [{ platform: 'instagram', kind: 'reel', url: 'https://instagram.com/p/c/',
+                caption: 'sourdough starter hydration' }],
+    });
+    const hits = db.prepare("SELECT rowid FROM items_fts WHERE items_fts MATCH 'sourdough'").all();
+    assert.equal(hits.length, 1, 'the whole point of deferring is searchable metadata now');
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('promote moves a limited number of deferred items to pending', async () => {
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    await post(base, '/ingest', {
+      deferMedia: true,
+      items: Array.from({ length: 5 }, (_, i) => ({
+        platform: 'instagram', kind: 'reel', url: `https://instagram.com/p/${i}/`, caption: 'x' })),
+    });
+    const out = await post(base, '/api/promote', { limit: 2 });
+    assert.equal(out.promoted, 2);
+    assert.equal(db.prepare("SELECT count(*) c FROM items WHERE state='pending'").get().c, 2);
+    assert.equal(db.prepare("SELECT count(*) c FROM items WHERE state='deferred'").get().c, 3);
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('promote never touches items that already advanced', async () => {
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    db.prepare("INSERT INTO items(platform,kind,url,state) VALUES ('instagram','reel','https://instagram.com/p/done/','media')").run();
+    await post(base, '/ingest', {
+      deferMedia: true,
+      items: [{ platform: 'instagram', kind: 'reel', url: 'https://instagram.com/p/x/', caption: 'x' }],
+    });
+    const out = await post(base, '/api/promote', { limit: 99 });
+    assert.equal(out.promoted, 1);
+    assert.equal(db.prepare('SELECT state FROM items WHERE url = ?')
+      .get('https://instagram.com/p/done/').state, 'media');
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('promote can be scoped to one platform', async () => {
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    await post(base, '/ingest', { deferMedia: true, items: [
+      { platform: 'instagram', kind: 'reel', url: 'https://instagram.com/p/i/', caption: 'x' },
+      { platform: 'twitter', kind: 'tweet', url: 'https://x.com/a/status/1', caption: 'x' },
+    ]});
+    const out = await post(base, '/api/promote', { limit: 99, platform: 'instagram' });
+    assert.equal(out.promoted, 1);
+    assert.equal(db.prepare('SELECT state FROM items WHERE url = ?')
+      .get('https://x.com/a/status/1').state, 'deferred');
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('promote requires a positive limit rather than silently promoting everything', async () => {
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    const res = await fetch(`${base}/api/promote`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 400);
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('deferMedia applies to updates too, not only inserts', async () => {
+  // Otherwise a repeat sync re-downloads every item whose caption changed:
+  // the update path resets state to pending, which the media stage drains.
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    await post(base, '/ingest', { deferMedia: true, items: [
+      { platform: 'instagram', kind: 'reel', url: 'https://instagram.com/p/a/', caption: 'short' }]});
+    await post(base, '/ingest', { deferMedia: true, items: [
+      { platform: 'instagram', kind: 'reel', url: 'https://instagram.com/p/a/', caption: 'a much longer caption' }]});
+    const row = db.prepare('SELECT state, caption FROM items WHERE url = ?').get('https://instagram.com/p/a/');
+    assert.equal(row.caption, 'a much longer caption');
+    assert.equal(row.state, 'deferred', 'a deferred update must not queue a download');
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});

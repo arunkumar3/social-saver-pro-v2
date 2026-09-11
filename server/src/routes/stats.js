@@ -66,6 +66,10 @@ export function getStats(req, res, { db }) {
     },
     queue: {
       pending: byState.pending ?? 0,
+      // Metadata stored but media not yet requested. Surfacing this matters:
+      // a deferred backlog is invisible work the user has chosen to postpone,
+      // and a UI that never shows it looks like the sync silently did nothing.
+      deferred: byState.deferred ?? 0,
       done: (byState.media ?? 0) + (byState.transcribed ?? 0) +
             (byState.described ?? 0) + (byState.enriched ?? 0) +
             (byState.embedded ?? 0),
