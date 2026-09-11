@@ -179,7 +179,8 @@ test('item.id === 0 is a legitimate falsy id and still works normally', async ()
     { config, run });
   assert.equal(out.ok, true);
   assert.equal(out.files.length, 1);
-  assert.ok(fs.existsSync(path.join(dir, '0')), 'the "0" item directory should have been created');
+  assert.ok(fs.existsSync(path.join(dir, 'instagram', '0')),
+    'the "0" item directory should have been created under its platform');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -377,5 +378,77 @@ test('a missing cookie file does not crash the download', async () => {
     { id: 64, platform: 'instagram', kind: 'reel', url: 'https://instagram.com/reel/e/' },
     { config, run });
   assert.equal(res.ok, true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ── media is laid out by platform ────────────────────────────────────
+//
+// media/<platform>/<item id>/ rather than media/<item id>/. Without the
+// platform segment the folder tree says nothing about where a file came
+// from — recoverable only by recognising that Twitter ids are numeric and
+// Instagram's are alphanumeric, which is a coincidence of their id schemes
+// rather than anything the design guarantees.
+
+test('downloads land under media/<platform>/<id>/', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-lay-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  const run = async (cmd, args) => {
+    const out = args[args.indexOf('-o') + 1];
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(path.join(path.dirname(out), 'clip.mp4'), 'x');
+    return { code: 0, stdout: '', stderr: '' };
+  };
+  const res = await downloadItem(
+    { id: 7, platform: 'instagram', kind: 'reel', url: 'https://instagram.com/reel/a/' },
+    { config, run });
+  assert.equal(res.ok, true);
+  assert.ok(fs.existsSync(path.join(dir, 'instagram', '7')), 'expected media/instagram/7');
+  assert.ok(res.files[0].path.includes(path.join('instagram', '7')));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('the two platforms do not collide even on the same item id', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-lay-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  const run = async (cmd, args) => {
+    const out = args[args.indexOf('-o') + 1];
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(path.join(path.dirname(out), 'clip.mp4'), 'x');
+    return { code: 0, stdout: '', stderr: '' };
+  };
+  await downloadItem({ id: 9, platform: 'instagram', kind: 'reel', url: 'https://instagram.com/reel/a/' }, { config, run });
+  await downloadItem({ id: 9, platform: 'twitter', kind: 'tweet', url: 'https://x.com/a/status/1' }, { config, run });
+  assert.ok(fs.existsSync(path.join(dir, 'instagram', '9', 'clip.mp4')));
+  assert.ok(fs.existsSync(path.join(dir, 'twitter', '9', 'clip.mp4')));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('an unknown platform is refused rather than becoming a directory name', async () => {
+  // platform is now part of a filesystem path, so it needs the same
+  // allow-list treatment item.id already gets.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-lay-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  const run = async () => { throw new Error('run() must not be called for a bad platform'); };
+  for (const platform of ['..', 'myspace', '', undefined, 'inst/agram']) {
+    const res = await downloadItem({ id: 5, platform, kind: 'reel', url: 'https://x.com/a/status/1' },
+      { config, run });
+    assert.equal(res.ok, false, `platform ${JSON.stringify(platform)} should be refused`);
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('clearing a retry only wipes that platform-and-item folder', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-lay-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  fs.mkdirSync(path.join(dir, 'twitter', '9'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'twitter', '9', 'keep.mp4'), 'PRECIOUS');
+  const run = async (cmd, args) => {
+    const out = args[args.indexOf('-o') + 1];
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(path.join(path.dirname(out), 'clip.mp4'), 'x');
+    return { code: 0, stdout: '', stderr: '' };
+  };
+  await downloadItem({ id: 9, platform: 'instagram', kind: 'reel', url: 'https://instagram.com/reel/a/' }, { config, run });
+  assert.equal(fs.readFileSync(path.join(dir, 'twitter', '9', 'keep.mp4'), 'utf8'), 'PRECIOUS');
   fs.rmSync(dir, { recursive: true, force: true });
 });

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { run as defaultRun } from './ytdlp.js';
 import { galleryDlPath } from './gallerydl.js';
 
+const VALID_PLATFORMS = new Set(['twitter', 'instagram']);
 const VIDEO_KINDS = new Set(['reel', 'tweet', 'thread', 'article']);
 const AUTH_PATTERNS = [/login required/i, /rate.?limit/i, /checkpoint/i, /challenge_required/i];
 
@@ -76,15 +77,24 @@ export async function downloadItem(item, { config, run = defaultRun }) {
     return { ok: false, files: [], error: 'item.id is missing or unsafe; refusing to resolve a media directory',
              errorKind: 'download_failed' };
   }
-  const itemDir = path.join(config.MEDIA_DIR, String(id));
+  // platform is part of the path now, so it needs the same allow-list
+  // treatment as the id. It is a closed set, which makes traversal through
+  // this segment impossible rather than merely unlikely.
+  const platform = item.platform;
+  if (!VALID_PLATFORMS.has(platform)) {
+    return { ok: false, files: [], error: `unknown platform ${JSON.stringify(platform)}; refusing to resolve a media directory`,
+             errorKind: 'download_failed' };
+  }
+  const platformDir = path.join(config.MEDIA_DIR, platform);
+  const itemDir = path.join(platformDir, String(id));
 
   // Belt-and-braces containment check: even with the regex above, verify the
   // resolved itemDir is genuinely a direct child of the media root before
   // ever touching the filesystem. Guards against the regex being loosened by
   // accident later, or MEDIA_DIR/id interacting in an unforeseen way.
-  const resolvedMediaDir = path.resolve(config.MEDIA_DIR);
+  const resolvedPlatformDir = path.resolve(platformDir);
   const resolvedItemDir = path.resolve(itemDir);
-  if (path.dirname(resolvedItemDir) !== resolvedMediaDir) {
+  if (path.dirname(resolvedItemDir) !== resolvedPlatformDir) {
     return { ok: false, files: [], error: 'resolved item directory escapes the media root; refusing to resolve',
              errorKind: 'download_failed' };
   }
