@@ -1,0 +1,185 @@
+:root {
+  --bg: #0b0b0c;
+  --panel: #151517;
+  --line: #26262a;
+  --text: #e7e7ea;
+  --muted: #8b8b94;
+  --accent: #3b82f6;
+  --hit: #3b2f0a;
+  --hit-text: #fcd34d;
+  --done: #22c55e;
+  --skip: #a1a1aa;
+  color-scheme: dark;
+}
+
+[hidden] { display: none !important; }
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.top {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--line);
+}
+.top h1 { margin: 0; font-size: 18px; font-weight: 600; }
+.counts { margin: 0; color: var(--muted); font-size: 13px; }
+
+.banner {
+  margin: 12px 24px 0;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #3a1414;
+  border: 1px solid #7f1d1d;
+  color: #fecaca;
+}
+
+.wrap { max-width: 860px; margin: 0 auto; padding: 20px 24px 60px; }
+
+.search {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 16px;
+}
+.search:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin: 14px 0 6px; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.toggle { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; cursor: pointer; }
+
+.result-note { color: var(--muted); font-size: 13px; min-height: 20px; margin: 6px 0; }
+
+.feed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.card.open { border-color: #3a3a42; }
+.card-main { padding: 14px 16px 6px; cursor: pointer; }
+.card-main:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+.handle { font-weight: 600; color: var(--text); }
+.meta { color: var(--muted); }
+.badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #172554;
+  color: #93c5fd;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.status { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.status-done { color: var(--done); }
+.status-skipped { color: var(--skip); }
+
+.excerpt { margin: 8px 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+mark { background: var(--hit); color: var(--hit-text); border-radius: 3px; padding: 0 2px; }
+
+.actions { display: flex; gap: 8px; padding: 6px 16px 14px; }
+.act {
+  padding: 5px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.act:hover { border-color: #3f3f46; }
+.act-done:hover { border-color: var(--done); color: var(--done); }
+
+.detail { border-top: 1px solid var(--line); padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 12px; }
+.full-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.player { width: 100%; max-height: 70vh; background: #000; border-radius: 8px; }
+.still { max-width: 100%; border-radius: 8px; }
+.file-link, .out-link { color: var(--accent); font-size: 13px; text-decoration: none; }
+.file-link:hover, .out-link:hover { text-decoration: underline; }
+.loading { color: var(--muted); margin: 0; }
+.error { color: #fca5a5; margin: 0; }
+
+.more {
+  display: block;
+  margin: 18px auto 0;
+  padding: 8px 18px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.detail-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.detail-tools .out-link { margin-left: 4px; }
+
+/* Lines that only make sense on paper: the source URL, and a note in place of
+   video or audio, which a PDF cannot hold. */
+.print-only { display: none; }
+
+@media (max-width: 600px) {
+  .top, .wrap { padding-left: 14px; padding-right: 14px; }
+}
+
+@media print {
+  :root { color-scheme: light; }
+  body { background: #fff; color: #000; font-size: 11pt; }
+  .wrap { max-width: none; padding: 0; }
+
+  /* "Save as PDF" prints the chosen item alone, not the feed around it. */
+  body.printing-item .top,
+  body.printing-item .banner,
+  body.printing-item .search,
+  body.printing-item .filters,
+  body.printing-item .result-note,
+  body.printing-item .more,
+  body.printing-item .card:not(.print-target) { display: none !important; }
+
+  /* Nothing interactive belongs on paper. The excerpt is hidden because the
+     full text follows it and would otherwise repeat its first 280 characters. */
+  .print-target .actions,
+  .print-target .detail-tools,
+  .print-target .file-link,
+  .print-target video,
+  .print-target audio,
+  .print-target .card-main .excerpt { display: none !important; }
+
+  .print-target .print-only { display: block; }
+
+  /* Long articles flow across pages instead of being clipped by the card. */
+  .card { overflow: visible; }
+  .print-target { border: none; background: none; }
+  .print-target .card-main { padding: 0; cursor: auto; }
+  .print-target .detail { border: none; padding: 12pt 0 0; }
+  .print-target .handle,
+  .print-target .meta,
+  .print-target .full-text { color: #000; }
+  .print-target .badge,
+  .print-target .status { background: none; color: #000; border: 1px solid #999; }
+  .print-target .print-source,
+  .print-target .print-media { color: #444; font-size: 9pt; margin: 0; overflow-wrap: anywhere; }
+  mark { background: none; color: inherit; }
+}

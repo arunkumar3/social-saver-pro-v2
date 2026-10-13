@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Social Saver — Twitter</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Twitter archive</h1>
+    <p class="counts" id="counts">Loading…</p>
+  </header>
+  <div class="banner" id="banner" role="alert" hidden></div>
+  <main class="wrap">
+    <input class="search" id="search" type="search" placeholder="Search your saved tweets"
+           autocomplete="off" spellcheck="false" aria-label="Search saved tweets">
+    <nav class="filters" aria-label="Filters">
+      <div class="chips" id="status-chips" role="group" aria-label="Status"></div>
+      <div class="chips" id="kind-chips" role="group" aria-label="Kind"></div>
+      <label class="toggle"><input type="checkbox" id="has-video"> Has video</label>
+    </nav>
+    <p class="result-note" id="result-note" aria-live="polite"></p>
+    <ol class="feed" id="feed"></ol>
+    <button class="more" id="more" type="button" hidden>Load more</button>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

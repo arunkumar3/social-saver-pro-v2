@@ -11,4 +11,5 @@ export const CONFIG = {
   MEDIA_DIR: path.join(root, 'data', 'media'),
   DB_PATH: path.join(root, 'data', 'archive.db'),
   COOKIES_PATH: path.join(root, 'data', 'cookies.txt'),
+  PUBLIC_DIR: path.join(root, 'public'),
 };

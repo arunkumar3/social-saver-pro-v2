@@ -6,6 +6,10 @@ import { health } from './routes/health.js';
 import { postCookies } from './routes/cookies.js';
 import { postIngest, postKnownUrls, postPromote } from './routes/ingest.js';
 import { getStats } from './routes/stats.js';
+import { getItems, getItem, patchItem } from './routes/items.js';
+import { getSearch } from './routes/search.js';
+import { getMedia } from './routes/media.js';
+import { serveStatic } from './routes/static.js';
 
 const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
@@ -46,13 +50,52 @@ export function isAllowedOrigin(originHeader) {
   return LOOPBACK_HOSTNAMES.has(origin.hostname);
 }
 
+// A Host header is a hostname, optionally followed by a port. Anything else,
+// such as userinfo ("evil.com@127.0.0.1") or a path, is refused before it is
+// parsed, so URL-parsing quirks cannot launder it into a loopback name.
+const HOST_HEADER = /^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d+)?$/;
+
+// DNS-rebinding guard. A hostile site can point its own domain at 127.0.0.1;
+// the browser then treats this server as same-origin with that site and lets
+// it read every response, including the whole archive. The request still
+// carries the attacker's domain in Host, so only loopback names are served.
+// Only the hostname is compared, not the port, so tests on ephemeral ports
+// and the extension's "Host: 127.0.0.1:8787" both pass.
+export function isAllowedHost(hostHeader) {
+  if (typeof hostHeader !== 'string' || !HOST_HEADER.test(hostHeader)) return false;
+  const hostname = hostHeader.startsWith('[')
+    ? hostHeader.slice(0, hostHeader.indexOf(']') + 1)
+    : hostHeader.split(':')[0];
+  return LOOPBACK_HOSTNAMES.has(hostname.toLowerCase());
+}
+
 export function createServer(deps) {
   return http.createServer(async (req, res) => {
-    const url = new URL(req.url, 'http://127.0.0.1');
     try {
-      // Applied once, here, for every state-changing (POST) route rather
-      // than copy-pasted into each handler.
-      if (req.method === 'POST' && !isAllowedOrigin(req.headers.origin)) {
+      if (!isAllowedHost(req.headers.host)) {
+        return send(res, 403, { error: 'forbidden_host' });
+      }
+      // Parsed inside the try, never before it. A path like "//" is not a
+      // valid URL reference, and when this parse sat outside the try its
+      // throw became an unhandled rejection that killed the whole process:
+      // one request from any web page took the archive offline.
+      // Every legitimate client sends an origin-form path: one leading slash.
+      // A target starting "//" is either invalid ("//" alone throws) or a
+      // protocol-relative reference that silently re-reads its first segment
+      // as a host ("//evil" parses to path "/"). Neither has a legitimate use.
+      if (typeof req.url !== 'string' || !req.url.startsWith('/') || req.url.startsWith('//')) {
+        return send(res, 400, { error: 'bad_request' });
+      }
+      let url;
+      try {
+        url = new URL(req.url, 'http://127.0.0.1');
+      } catch {
+        return send(res, 400, { error: 'bad_request' });
+      }
+      // Applied once, here, for every state-changing method rather than per
+      // route. It covered only POST until the dashboard added PATCH, which
+      // would otherwise have been the one write a cross-site page could make.
+      if (req.method !== 'GET' && req.method !== 'HEAD' && !isAllowedOrigin(req.headers.origin)) {
         return send(res, 403, { error: 'forbidden_origin' });
       }
       if (req.method === 'GET' && url.pathname === '/health') return health(req, res);
@@ -69,6 +112,14 @@ export function createServer(deps) {
       if (req.method === 'POST' && url.pathname === '/known-urls') {
         return await postKnownUrls(req, res, deps);
       }
+      if (req.method === 'GET' && url.pathname === '/api/items') return getItems(req, res, deps, url);
+      const itemMatch = /^\/api\/items\/([^/]+)$/.exec(url.pathname);
+      if (itemMatch && req.method === 'GET') return getItem(req, res, deps, itemMatch[1]);
+      if (itemMatch && req.method === 'PATCH') return await patchItem(req, res, deps, itemMatch[1]);
+      if (req.method === 'GET' && url.pathname === '/api/search') return getSearch(req, res, deps, url);
+      const mediaMatch = /^\/media\/([^/]+)$/.exec(url.pathname);
+      if (mediaMatch && req.method === 'GET') return getMedia(req, res, deps, mediaMatch[1]);
+      if (req.method === 'GET' && serveStatic(req, res, deps, url.pathname)) return;
       return send(res, 404, { error: 'not_found' });
     } catch (err) {
       console.error('[server]', err);
