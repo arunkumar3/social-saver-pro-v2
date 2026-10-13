@@ -8,6 +8,7 @@ import { postIngest, postKnownUrls, postPromote } from './routes/ingest.js';
 import { getStats } from './routes/stats.js';
 import { getItems, getItem, patchItem } from './routes/items.js';
 import { getSearch } from './routes/search.js';
+import { getMedia } from './routes/media.js';
 
 const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
@@ -99,6 +100,8 @@ export function createServer(deps) {
       if (itemMatch && req.method === 'GET') return getItem(req, res, deps, itemMatch[1]);
       if (itemMatch && req.method === 'PATCH') return await patchItem(req, res, deps, itemMatch[1]);
       if (req.method === 'GET' && url.pathname === '/api/search') return getSearch(req, res, deps, url);
+      const mediaMatch = /^\/media\/([^/]+)$/.exec(url.pathname);
+      if (mediaMatch && req.method === 'GET') return getMedia(req, res, deps, mediaMatch[1]);
       return send(res, 404, { error: 'not_found' });
     } catch (err) {
       console.error('[server]', err);
