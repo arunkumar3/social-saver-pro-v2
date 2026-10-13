@@ -127,3 +127,17 @@ test('bad parameters are 400 with a named error', async () => {
     assert.equal((await search(base, 'q=a&limit=0')).body.error, 'bad_limit');
   } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a NUL byte in the query is a normal answer, not a 500', async () => {
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    const id = addItem(db, { url: 'https://x.com/a/status/1', caption: 'agent' });
+    for (const qs of ['q=agent%00', 'q=%00', 'q=ag%00ent']) {
+      const r = await search(base, qs);
+      assert.equal(r.status, 200, qs);
+      assert.ok(Array.isArray(r.body.items), qs);
+    }
+    assert.deepEqual((await search(base, 'q=agent%00')).body.items.map((i) => i.id), [id]);
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});

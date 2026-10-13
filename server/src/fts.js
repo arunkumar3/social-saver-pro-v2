@@ -18,9 +18,14 @@ export const HIT_CLOSE = '';
 // phrase, so it is dropped rather than passed through.
 const HAS_WORD_CHAR = /[\p{L}\p{N}]/u;
 
+// Control characters become separators. A NUL inside a quoted FTS5 phrase is
+// "unterminated string", which reached the user as a 500.
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
+
 export function toMatchQuery(raw) {
   if (typeof raw !== 'string') return null;
   const tokens = raw
+    .replace(CONTROL_CHARS, ' ')
     .split(/\s+/)
     .map((t) => t.replace(/"/g, ''))
     .filter((t) => HAS_WORD_CHAR.test(t));

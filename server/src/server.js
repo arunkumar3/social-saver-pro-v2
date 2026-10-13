@@ -71,10 +71,26 @@ export function isAllowedHost(hostHeader) {
 
 export function createServer(deps) {
   return http.createServer(async (req, res) => {
-    const url = new URL(req.url, 'http://127.0.0.1');
     try {
       if (!isAllowedHost(req.headers.host)) {
         return send(res, 403, { error: 'forbidden_host' });
+      }
+      // Parsed inside the try, never before it. A path like "//" is not a
+      // valid URL reference, and when this parse sat outside the try its
+      // throw became an unhandled rejection that killed the whole process:
+      // one request from any web page took the archive offline.
+      // Every legitimate client sends an origin-form path: one leading slash.
+      // A target starting "//" is either invalid ("//" alone throws) or a
+      // protocol-relative reference that silently re-reads its first segment
+      // as a host ("//evil" parses to path "/"). Neither has a legitimate use.
+      if (typeof req.url !== 'string' || !req.url.startsWith('/') || req.url.startsWith('//')) {
+        return send(res, 400, { error: 'bad_request' });
+      }
+      let url;
+      try {
+        url = new URL(req.url, 'http://127.0.0.1');
+      } catch {
+        return send(res, 400, { error: 'bad_request' });
       }
       // Applied once, here, for every state-changing method rather than per
       // route. It covered only POST until the dashboard added PATCH, which

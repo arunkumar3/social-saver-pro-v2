@@ -72,3 +72,12 @@ test('a stray marker character in a caption cannot produce anything but text', (
   assert.ok(spans.every((s) => typeof s.text === 'string' && typeof s.hit === 'boolean'));
   assert.equal(spans.map((s) => s.text).join(''), 'xy');
 });
+
+test('control characters are treated as separators, never passed into a phrase', () => {
+  // A NUL inside a quoted FTS5 phrase is "unterminated string", which reached
+  // the user as a 500. Nobody types one, but a crafted URL can send it.
+  assert.equal(toMatchQuery('agent\u0000'), '"agent"*');
+  assert.equal(toMatchQuery('ai\u0000agent'), '"ai" "agent"*');
+  assert.equal(toMatchQuery('\u0000'), null);
+  assert.equal(toMatchQuery('a\u0007b\u001fc\u007f'), '"a" "b" "c"*');
+});
