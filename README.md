@@ -85,6 +85,16 @@ The server binds to `http://127.0.0.1:8787` and is only reachable from your loca
 powershell -ExecutionPolicy Bypass -File bin/install-task.ps1
 ```
 
+### Dashboard
+
+With the server running, open <http://127.0.0.1:8787/>.
+
+- **Search** across everything saved, ranked by relevance. Done items are included, so finished work is still findable.
+- **Work through saves** in the To-do feed: mark each one Done or Skip and it leaves the list.
+- **Open a card** for the full text, inline video with seeking, and a link back to X.
+
+The dashboard is served only on `127.0.0.1` and refuses requests addressed to any other host name, which blocks DNS-rebinding attacks. Tweet text is shown strictly as text, never as markup, because it is written by accounts you don't control.
+
 ### 3. Load the Extension
 
 1. Open `chrome://extensions` in Chrome
