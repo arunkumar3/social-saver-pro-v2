@@ -27,6 +27,11 @@ let generation = 0;
 
 const $ = (id) => document.getElementById(id);
 
+// Captured once at load. Printing restores to this, not to whatever the title
+// was a moment ago, so a missed afterprint can never leave an item's title on
+// the tab.
+const PAGE_TITLE = document.title;
+
 /** Build an element. Strings among the children become text nodes, never markup. */
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -232,10 +237,70 @@ async function toggleDetail(item, li, main) {
     // A direct link for every file: .mkv will not play inline in most browsers.
     parts.push(el('a', { class: 'file-link', href: src, download: '' },
       `Download ${m.ext.replace('.', '')} · ${fmtBytes(m.bytes)}`));
+    // A PDF cannot hold video or audio, so the printed copy says so instead.
+    if (m.kind === 'video' || m.kind === 'audio') {
+      parts.push(el('p', {
+        class: 'print-only print-media',
+        text: `${m.kind === 'video' ? 'Video' : 'Audio'} · ${fmtBytes(m.bytes)} — not included, see source link`,
+      }));
+    }
   }
   const href = safeHref(full.url);
-  if (href) parts.push(el('a', { class: 'out-link', href, target: '_blank', rel: 'noopener noreferrer' }, 'Open on X ↗'));
+  if (href) parts.push(el('p', { class: 'print-only print-source', text: `Source: ${href}` }));
+  parts.push(el('div', { class: 'detail-tools' },
+    copyButton(full),
+    el('button', {
+      type: 'button',
+      class: 'act act-pdf',
+      onclick: (e) => { e.stopPropagation(); printItem(li, full); },
+    }, 'Save as PDF'),
+    href ? el('a', { class: 'out-link', href, target: '_blank', rel: 'noopener noreferrer' }, 'Open on X ↗') : null));
   detail.replaceChildren(...parts);
+}
+
+function copyButton(full) {
+  const btn = el('button', { type: 'button', class: 'act act-copy' }, 'Copy');
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    try {
+      // 127.0.0.1 counts as a secure context, so the async clipboard API is
+      // available. If the browser still refuses, say so rather than appear to
+      // have copied.
+      await navigator.clipboard.writeText(full.text || '');
+      flash(btn, 'Copied ✓', 2000);
+    } catch {
+      flash(btn, 'Copy failed — select the text and press Ctrl+C', 4000);
+    }
+  });
+  return btn;
+}
+
+function flash(btn, text, ms) {
+  btn.dataset.label ??= btn.textContent;
+  btn.textContent = text;
+  clearTimeout(Number(btn.dataset.timer));
+  btn.dataset.timer = String(setTimeout(() => { btn.textContent = btn.dataset.label; }, ms));
+}
+
+/**
+ * Open the print dialog for one item. The print stylesheet shows only the card
+ * marked as the print target, so choosing "Save as PDF" there produces a clean
+ * document of that item alone. The page title becomes Chrome's suggested file
+ * name, so it is set to the item for the moment of printing and restored after.
+ */
+function printItem(li, full) {
+  const reset = () => {
+    document.title = PAGE_TITLE;
+    document.body.classList.remove('printing-item');
+    for (const t of document.querySelectorAll('.print-target')) t.classList.remove('print-target');
+  };
+  reset();
+  const lead = Array.from((full.text || '').replace(/\s+/g, ' ').trim()).slice(0, 60).join('');
+  document.title = [full.authorHandle || full.author, lead].filter(Boolean).join(' — ') || PAGE_TITLE;
+  document.body.classList.add('printing-item');
+  li.classList.add('print-target');
+  window.addEventListener('afterprint', reset, { once: true });
+  window.print();
 }
 
 async function loadPage(gen) {

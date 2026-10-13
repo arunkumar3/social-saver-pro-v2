@@ -133,6 +133,53 @@ mark { background: var(--hit); color: var(--hit-text); border-radius: 3px; paddi
   cursor: pointer;
 }
 
+.detail-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.detail-tools .out-link { margin-left: 4px; }
+
+/* Lines that only make sense on paper: the source URL, and a note in place of
+   video or audio, which a PDF cannot hold. */
+.print-only { display: none; }
+
 @media (max-width: 600px) {
   .top, .wrap { padding-left: 14px; padding-right: 14px; }
+}
+
+@media print {
+  :root { color-scheme: light; }
+  body { background: #fff; color: #000; font-size: 11pt; }
+  .wrap { max-width: none; padding: 0; }
+
+  /* "Save as PDF" prints the chosen item alone, not the feed around it. */
+  body.printing-item .top,
+  body.printing-item .banner,
+  body.printing-item .search,
+  body.printing-item .filters,
+  body.printing-item .result-note,
+  body.printing-item .more,
+  body.printing-item .card:not(.print-target) { display: none !important; }
+
+  /* Nothing interactive belongs on paper. The excerpt is hidden because the
+     full text follows it and would otherwise repeat its first 280 characters. */
+  .print-target .actions,
+  .print-target .detail-tools,
+  .print-target .file-link,
+  .print-target video,
+  .print-target audio,
+  .print-target .card-main .excerpt { display: none !important; }
+
+  .print-target .print-only { display: block; }
+
+  /* Long articles flow across pages instead of being clipped by the card. */
+  .card { overflow: visible; }
+  .print-target { border: none; background: none; }
+  .print-target .card-main { padding: 0; cursor: auto; }
+  .print-target .detail { border: none; padding: 12pt 0 0; }
+  .print-target .handle,
+  .print-target .meta,
+  .print-target .full-text { color: #000; }
+  .print-target .badge,
+  .print-target .status { background: none; color: #000; border: 1px solid #999; }
+  .print-target .print-source,
+  .print-target .print-media { color: #444; font-size: 9pt; margin: 0; overflow-wrap: anywhere; }
+  mark { background: none; color: inherit; }
 }
