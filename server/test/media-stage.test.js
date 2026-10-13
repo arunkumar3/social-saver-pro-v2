@@ -149,3 +149,14 @@ test('a genuine failure still parks after three attempts', async () => {
     assert.equal(row.attempts, 3);
   } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a success resets the attempt counter', async () => {
+  // Item 2 was parked after only two retries in September because one
+  // failure from weeks earlier was still on its counter.
+  const { dir, db, config } = harness();
+  try {
+    db.prepare("INSERT INTO items(platform,kind,url,attempts) VALUES ('instagram','reel','https://ig/r/1',2)").run();
+    await runMediaStage(db, { config, run: okRun(dir), limit: 10 });
+    assert.equal(db.prepare('SELECT attempts FROM items WHERE id = 1').get().attempts, 0);
+  } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});

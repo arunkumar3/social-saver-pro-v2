@@ -285,3 +285,67 @@ test('deferMedia applies to updates too, not only inserts', async () => {
     assert.equal(row.state, 'deferred', 'a deferred update must not queue a download');
   } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+// ── a text update must never re-queue media ──────────────────────────
+//
+// Real incident, item 2: a tweet whose 409 MB video had downloaded fine was
+// re-saved by the daily sync with a slightly longer caption. The update path
+// reset it to `pending`, the media stage re-downloaded it, the resolver
+// cleared the folder first, the download hit a transient network error, and
+// the video was gone. A caption change is not a reason to touch media.
+
+test('re-saving an item whose media is done updates text but keeps its state', async () => {
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    db.prepare("INSERT INTO items(platform,kind,url,caption,state) VALUES ('twitter','tweet','https://x.com/a/status/1','short','media')").run();
+    const out = await post(base, '/ingest', { items: [
+      { platform: 'twitter', kind: 'tweet', url: 'https://x.com/a/status/1', caption: 'a much longer caption now' }]});
+    assert.equal(out.updated, 1);
+    const row = db.prepare('SELECT state, caption FROM items WHERE url = ?').get('https://x.com/a/status/1');
+    assert.equal(row.caption, 'a much longer caption now');
+    assert.equal(row.state, 'media', 'must not re-queue a download the item already has');
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('re-saving keeps every post-download state, not just media', async () => {
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    for (const [i, state] of ['transcribed', 'described', 'enriched', 'embedded'].entries()) {
+      const url = `https://x.com/a/status/${10 + i}`;
+      db.prepare("INSERT INTO items(platform,kind,url,caption,state) VALUES ('twitter','tweet',?,'s',?)").run(url, state);
+      await post(base, '/ingest', { items: [{ platform: 'twitter', kind: 'tweet', url, caption: 'longer caption' }]});
+      assert.equal(db.prepare('SELECT state FROM items WHERE url = ?').get(url).state, state);
+    }
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a deferred item stays deferred when re-saved by a normal sync', async () => {
+  // The user chose to postpone that download; a routine re-save should not
+  // silently override the choice.
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    db.prepare("INSERT INTO items(platform,kind,url,caption,state) VALUES ('instagram','reel','https://instagram.com/p/z/','s','deferred')").run();
+    await post(base, '/ingest', { items: [
+      { platform: 'instagram', kind: 'reel', url: 'https://instagram.com/p/z/', caption: 'longer caption' }]});
+    assert.equal(db.prepare('SELECT state FROM items WHERE url = ?').get('https://instagram.com/p/z/').state, 'deferred');
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('re-saving a failed item gives it a fresh try', async () => {
+  // How a transient failure heals: the daily sync re-saves the bookmark and
+  // the item is retried. Safe now that a failed retry cannot destroy media.
+  const { dir, db, server } = harness();
+  const base = await listen(server);
+  try {
+    db.prepare("INSERT INTO items(platform,kind,url,caption,state,attempts,state_error) VALUES ('twitter','tweet','https://x.com/a/status/2','s','failed',3,'download_failed: boom')").run();
+    await post(base, '/ingest', { items: [
+      { platform: 'twitter', kind: 'tweet', url: 'https://x.com/a/status/2', caption: 'longer caption' }]});
+    const row = db.prepare('SELECT state, attempts, state_error FROM items WHERE url = ?').get('https://x.com/a/status/2');
+    assert.equal(row.state, 'pending');
+    assert.equal(row.attempts, 0);
+    assert.equal(row.state_error, null);
+  } finally { server.close(); db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});

@@ -33,6 +33,45 @@ function isFollowedLinkMiss(stderr, itemUrl) {
   return m[1].replace(/\/+$/, '') !== String(itemUrl).replace(/\/+$/, '');
 }
 
+// The yt-dlp extractor that handles each platform's own posts. Anything else
+// in an error — [generic], [twitter:shortener], [TikTok] — means the failure
+// happened somewhere the post linked to, not on the post.
+const OWN_EXTRACTOR = { twitter: 'twitter', instagram: 'instagram' };
+
+/** The post's own id: a tweet's status number, or an Instagram shortcode. */
+function ownId(item) {
+  if (item.externalId) return String(item.externalId);
+  const u = String(item.url);
+  const tweet = u.match(/\/status(?:es)?\/(\d+)/);
+  if (tweet) return tweet[1];
+  const gram = u.match(/\/(?:p|reels?|tv)\/([A-Za-z0-9_-]+)/);
+  return gram ? gram[1] : null;
+}
+
+/**
+ * Did the download fail on something OTHER than the post itself?
+ *
+ * A post with no native video makes yt-dlp follow what it links to, and the
+ * failure is then reported against that target. In a month of daily syncs
+ * that produced eleven false failures: deleted quoted tweets (404), t.co
+ * shorteners, a TikTok page (401), an external site rate-limiting (429).
+ * Matching error PHRASES missed all of them, because each extractor words
+ * things differently. Matching on WHICH thing failed does not depend on
+ * wording: yt-dlp prefixes every error with `[extractor] id:`.
+ *
+ * When the tag cannot be parsed this answers false, so an unrecognised error
+ * stays a genuine, retryable failure rather than being quietly waved through.
+ */
+function failedOnSomethingElse(stderr, item) {
+  if (isFollowedLinkMiss(stderr, item.url)) return true;
+  const m = stderr.match(/ERROR:\s*\[([^\]]+)\]\s*([^:\s]+):/i);
+  if (!m) return false;
+  const extractor = m[1].toLowerCase();
+  if (extractor !== OWN_EXTRACTOR[item.platform]) return true;
+  const mine = ownId(item);
+  return mine !== null && m[2] !== mine;
+}
+
 export function chooseDownloader(item) {
   if (item.platform === 'instagram' && !VIDEO_KINDS.has(item.kind)) return 'gallery-dl';
   return 'yt-dlp';
@@ -99,63 +138,112 @@ export async function downloadItem(item, { config, run = defaultRun }) {
              errorKind: 'download_failed' };
   }
 
-  // itemDir is keyed only by item.id and persists across retry attempts, so a
-  // stale .part file / half-written image / gallery-dl metadata left behind
-  // by a previous failed attempt must not leak into this attempt's readdirSync
-  // below. Clear it first. force:true makes the first-ever attempt (no
-  // directory yet) a no-op instead of an error.
-  fs.rmSync(itemDir, { recursive: true, force: true });
-  fs.mkdirSync(itemDir, { recursive: true });
+  // Download into a FRESH staging folder and only swap it into place once the
+  // download has actually produced files.
+  //
+  // This used to clear itemDir before downloading, to stop stale .part files
+  // from a failed attempt leaking into a later one. That was destructive: on
+  // Sep 19 a re-queued tweet had its good 409 MB video deleted up front, then
+  // the re-download hit a transient network error, leaving nothing. A fresh
+  // staging folder per attempt solves the same leak without ever touching the
+  // existing media until a replacement is in hand.
+  const staging = path.join(platformDir, `.staging-${id}-${process.pid}-${Date.now()}`);
+  fs.mkdirSync(staging, { recursive: true });
 
-  const downloader = chooseDownloader(item);
-  const outTemplate = path.join(itemDir, '%(id)s.%(ext)s');
-
-  // gallery-dl's -o sets a config key=value, not an output template — it only
-  // takes -D for the destination directory. yt-dlp's -o genuinely is the
-  // output template, so that branch keeps it.
-  // A literal '--' terminates option parsing so item.url can never be
-  // misread as a flag (e.g. '--exec=...' or '--config-location=...') by the
-  // downloader — everything after it is forced to be a positional argument.
-  // The cookie copy lives outside itemDir on purpose: the readdirSync below
-  // treats everything in itemDir as downloaded media, so a cookie file there
-  // would be recorded as a media row and, worse, left on disk.
-  const cookieCopy = makeCookieCopy(config.COOKIES_PATH);
-  const cookieArgs = cookieCopy ? ['--cookies', cookieCopy.copy] : [];
-
-  const args = downloader === 'yt-dlp'
-    ? [...cookieArgs, '--no-warnings', '-o', outTemplate, '--', item.url]
-    : [...cookieArgs, '-D', itemDir, '--', item.url];
-
-  const cmd = downloader === 'yt-dlp' ? 'yt-dlp' : galleryDlPath();
-  let code, stderr;
   try {
-    ({ code, stderr } = await run(cmd, args));
+    const downloader = chooseDownloader(item);
+    const outTemplate = path.join(staging, '%(id)s.%(ext)s');
+
+    // gallery-dl's -o sets a config key=value, not an output template — it
+    // only takes -D for the destination directory. yt-dlp's -o genuinely is
+    // the output template, so that branch keeps it.
+    // A literal '--' terminates option parsing so item.url can never be
+    // misread as a flag (e.g. '--exec=...' or '--config-location=...').
+    // The cookie copy lives outside the staging folder on purpose: everything
+    // in there is treated as downloaded media.
+    const cookieCopy = makeCookieCopy(config.COOKIES_PATH);
+    const cookieArgs = cookieCopy ? ['--cookies', cookieCopy.copy] : [];
+
+    const args = downloader === 'yt-dlp'
+      ? [...cookieArgs, '--no-warnings', '-o', outTemplate, '--', item.url]
+      : [...cookieArgs, '-D', staging, '--', item.url];
+
+    const cmd = downloader === 'yt-dlp' ? 'yt-dlp' : galleryDlPath();
+    let code, stderr;
+    try {
+      ({ code, stderr } = await run(cmd, args));
+    } finally {
+      // The copy holds a live session token, so remove it on every path,
+      // including a thrown runner.
+      if (cookieCopy) fs.rmSync(cookieCopy.dir, { recursive: true, force: true });
+    }
+
+    if (code !== 0) {
+      // Auth first: an expired session can surface alongside other noise, and
+      // its fix is specific (log back in), so it must never be masked.
+      if (AUTH_PATTERNS.some((re) => re.test(stderr))) {
+        return { ok: false, files: [], error: stderr.trim().slice(0, 500), errorKind: 'auth_expired' };
+      }
+      if (NO_MEDIA_PATTERNS.some((re) => re.test(stderr)) || failedOnSomethingElse(stderr, item)) {
+        return keepOrNoMedia(itemDir, stderr.trim().slice(0, 200));
+      }
+      return { ok: false, files: [], error: stderr.trim().slice(0, 500), errorKind: 'download_failed' };
+    }
+
+    if (listFiles(staging).length === 0) {
+      // A clean exit that produced nothing means there was nothing to fetch.
+      return keepOrNoMedia(itemDir, 'downloader exited 0 with no files');
+    }
+
+    try {
+      promote(staging, itemDir);
+    } catch (err) {
+      // The old media is restored by promote() before it rethrows, so this
+      // is a failed attempt, not a loss.
+      return { ok: false, files: [], error: `could not move download into place: ${err.message}`,
+               errorKind: 'download_failed' };
+    }
+    return { ok: true, files: listFiles(itemDir) };
   } finally {
-    // The copy holds a live session token, so remove it on every path,
-    // including a thrown runner.
-    if (cookieCopy) fs.rmSync(cookieCopy.dir, { recursive: true, force: true });
+    // A no-op after a successful promote (staging was renamed away); cleans up
+    // after every failure and no-media outcome.
+    fs.rmSync(staging, { recursive: true, force: true });
   }
+}
 
-  if (code !== 0) {
-    // Auth first: an expired session can surface alongside other noise, and
-    // its fix is specific (log back in), so it must never be masked.
-    if (AUTH_PATTERNS.some((re) => re.test(stderr))) {
-      return { ok: false, files: [], error: stderr.trim().slice(0, 500), errorKind: 'auth_expired' };
-    }
-    if (NO_MEDIA_PATTERNS.some((re) => re.test(stderr)) || isFollowedLinkMiss(stderr, item.url)) {
-      return { ok: true, files: [], noMedia: true, note: stderr.trim().slice(0, 200) };
-    }
-    return { ok: false, files: [], error: stderr.trim().slice(0, 500), errorKind: 'download_failed' };
-  }
-
-  const files = fs.readdirSync(itemDir).map((name) => {
-    const full = path.join(itemDir, name);
+function listFiles(dir) {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).map((name) => {
+    const full = path.join(dir, name);
     return { kind: classifyKind(name), path: full, bytes: fs.statSync(full).size };
   });
+}
 
-  if (files.length === 0) {
-    // A clean exit that produced nothing means there was nothing to fetch.
-    return { ok: true, files: [], noMedia: true, note: 'downloader exited 0 with no files' };
+/**
+ * "There is nothing new to download." If the item already has media from an
+ * earlier run, report that media so its rows survive — a source that later
+ * loses its video should not take the archived copy down with it.
+ */
+function keepOrNoMedia(itemDir, note) {
+  const existing = listFiles(itemDir);
+  if (existing.length > 0) return { ok: true, files: existing, kept: true, note };
+  return { ok: true, files: [], noMedia: true, note };
+}
+
+/**
+ * Move a completed download into place without ever having zero copies.
+ * The old folder is renamed aside, the new one renamed in, and only then is
+ * the old one deleted. If the second rename fails, the old one is restored.
+ */
+function promote(staging, itemDir) {
+  const backup = `${itemDir}.old-${process.pid}-${Date.now()}`;
+  const hadOld = fs.existsSync(itemDir);
+  if (hadOld) fs.renameSync(itemDir, backup);
+  try {
+    fs.renameSync(staging, itemDir);
+  } catch (err) {
+    if (hadOld) fs.renameSync(backup, itemDir);
+    throw err;
   }
-  return { ok: true, files };
+  if (hadOld) fs.rmSync(backup, { recursive: true, force: true });
 }

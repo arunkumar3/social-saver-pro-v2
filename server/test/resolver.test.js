@@ -452,3 +452,129 @@ test('clearing a retry only wipes that platform-and-item folder', async () => {
   assert.equal(fs.readFileSync(path.join(dir, 'twitter', '9', 'keep.mp4'), 'utf8'), 'PRECIOUS');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ── a retry must never destroy a good download ───────────────────────
+//
+// The resolver used to clear the item folder BEFORE downloading, so a
+// failed retry left nothing. Downloads now go to a staging folder that only
+// replaces the real one on success.
+
+function seed(dir, platform, id, name, body) {
+  const d = path.join(dir, platform, String(id));
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, name), body);
+  return d;
+}
+const writesClip = (name = 'new.mp4') => async (cmd, args) => {
+  const out = args.includes('-o') ? path.dirname(args[args.indexOf('-o') + 1]) : args[args.indexOf('-D') + 1];
+  fs.mkdirSync(out, { recursive: true });
+  fs.writeFileSync(path.join(out, name), 'NEW');
+  return { code: 0, stdout: '', stderr: '' };
+};
+
+test('a failed retry leaves the previous good download intact', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-at-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  const itemDir = seed(dir, 'twitter', 2, 'good.mp4', 'PRECIOUS 409 MB');
+  const run = async () => ({ code: 1, stdout: '',
+    stderr: "ERROR: [twitter] 2097202883662106972: Unable to download JSON metadata: ('Connection aborted.')" });
+  const res = await downloadItem(
+    { id: 2, platform: 'twitter', kind: 'tweet', url: 'https://x.com/a/status/2097202883662106972' },
+    { config, run });
+  assert.equal(res.ok, false);
+  assert.equal(fs.readFileSync(path.join(itemDir, 'good.mp4'), 'utf8'), 'PRECIOUS 409 MB');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a successful retry replaces the previous download', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-at-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  const itemDir = seed(dir, 'instagram', 5, 'old.mp4', 'OLD');
+  const res = await downloadItem(
+    { id: 5, platform: 'instagram', kind: 'reel', url: 'https://instagram.com/reel/a/' },
+    { config, run: writesClip() });
+  assert.equal(res.ok, true);
+  assert.deepEqual(fs.readdirSync(itemDir), ['new.mp4']);
+  assert.ok(res.files[0].path.startsWith(itemDir), 'reported paths must be the final location, not staging');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('no staging folders are left behind, on success or failure', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-at-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  await downloadItem({ id: 6, platform: 'instagram', kind: 'reel', url: 'https://instagram.com/reel/b/' },
+    { config, run: writesClip() });
+  await downloadItem({ id: 7, platform: 'instagram', kind: 'reel', url: 'https://instagram.com/reel/c/' },
+    { config, run: async () => ({ code: 1, stdout: '', stderr: 'ERROR: [Instagram] c: HTTP Error 500' }) });
+  assert.deepEqual(fs.readdirSync(path.join(dir, 'instagram')).sort(), ['6']);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a no-media result keeps media an item already has', async () => {
+  // If a source later loses its video, the archive should not follow it.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-at-'));
+  const config = { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') };
+  const itemDir = seed(dir, 'twitter', 8, 'kept.mp4', 'KEEP');
+  const run = async () => ({ code: 1, stdout: '', stderr: 'ERROR: [twitter] 8: No video could be found in this tweet' });
+  const res = await downloadItem({ id: 8, platform: 'twitter', kind: 'tweet', url: 'https://x.com/a/status/8' },
+    { config, run });
+  assert.equal(res.ok, true);
+  assert.equal(fs.readFileSync(path.join(itemDir, 'kept.mp4'), 'utf8'), 'KEEP');
+  assert.equal(res.files.length, 1, 'existing media should be reported so its row survives');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ── failures on a LINK inside a post are not failures of the post ────
+//
+// When a tweet has no native video, yt-dlp follows what it links to and
+// fails there instead: a deleted quoted tweet (404), a t.co shortener, a
+// TikTok page (401), an external site rate-limiting (429). The tweet itself
+// archived fine. The tell is that the failing extractor or id is not the
+// post's own.
+
+const failWith = (stderr) => async () => ({ code: 1, stdout: '', stderr });
+async function classify(stderr, item) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ssp-cl-'));
+  try {
+    return await downloadItem(item, { config: { MEDIA_DIR: dir, COOKIES_PATH: path.join(dir, 'c.txt') }, run: failWith(stderr) });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+const TWEET = { id: 1466, platform: 'twitter', kind: 'tweet', url: 'https://x.com/oneviske/status/2097612432072167859' };
+
+test('a generic-extractor 404 on another id is a followed link: no media', async () => {
+  const r = await classify('ERROR: [generic] 2097508727767351296: Unable to download webpage: HTTP Error 404: Not Found', TWEET);
+  assert.equal(r.ok, true); assert.equal(r.noMedia, true);
+});
+
+test('a t.co shortener failure is a followed link: no media', async () => {
+  const r = await classify('ERROR: [twitter:shortener] ot1t7L8ZBF: Unable to download webpage: HTTP Error 405', TWEET);
+  assert.equal(r.noMedia, true);
+});
+
+test('a quoted tweet that was deleted is a followed link: no media', async () => {
+  const r = await classify('ERROR: [twitter] 2097508727767351296: Unable to download JSON metadata: HTTP Error 404', TWEET);
+  assert.equal(r.noMedia, true);
+});
+
+test('an external site rate-limiting is not our failure', async () => {
+  const r = await classify('ERROR: [generic] rareui: Unable to download webpage: HTTP Error 429: Too Many Requests', TWEET);
+  assert.equal(r.noMedia, true);
+});
+
+test('a failure on the post own id is still a genuine, retryable failure', async () => {
+  // Item 2's real error. Transient, and about the tweet itself — must retry.
+  const r = await classify("ERROR: [twitter] 2097202883662106972: Unable to download JSON metadata: ('Connection aborted.')",
+    { id: 2, platform: 'twitter', kind: 'tweet', url: 'https://x.com/Blackmagic_News/status/2097202883662106972' });
+  assert.equal(r.ok, false); assert.equal(r.errorKind, 'download_failed');
+});
+
+test('an Instagram failure on the post own shortcode is genuine', async () => {
+  const r = await classify('ERROR: [Instagram] Dcn38GltCvu: Unable to download webpage: HTTP Error 500',
+    { id: 21, platform: 'instagram', kind: 'reel', url: 'https://www.instagram.com/p/Dcn38GltCvu/' });
+  assert.equal(r.ok, false); assert.equal(r.errorKind, 'download_failed');
+});
+
+test('an expired session still wins over link classification', async () => {
+  const r = await classify('ERROR: [generic] something: login required to access this content', TWEET);
+  assert.equal(r.errorKind, 'auth_expired');
+});

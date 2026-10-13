@@ -12,7 +12,10 @@ export async function runMediaStage(db, { config, run, limit = 25 }) {
   const addMedia = db.prepare(
     'INSERT INTO media (item_id, kind, path, bytes, downloader) VALUES (?, ?, ?, ?, ?)');
   const markOk = db.prepare(
-    "UPDATE items SET state = 'media', state_error = NULL, updated_at = datetime('now') WHERE id = ?");
+    "UPDATE items SET state = 'media', state_error = NULL, attempts = 0, " +
+    // attempts counts failures in the current run of trouble, not a lifetime
+    // tally: a stale count once parked an item after only two retries.
+    "updated_at = datetime('now') WHERE id = ?");
   const markFail = db.prepare(`
     UPDATE items
     SET attempts = attempts + 1,
@@ -40,7 +43,8 @@ export async function runMediaStage(db, { config, run, limit = 25 }) {
       // row: "why does this tweet have no video" is a real question later, and
       // the item row itself carries no error because nothing went wrong.
       logRun.run(item.id, 'media', 'ok',
-        result.noMedia ? `no_media: ${result.note ?? ''}`.trim() : null, ms);
+        result.noMedia ? `no_media: ${result.note ?? ''}`.trim()
+          : result.kept ? `kept_existing: ${result.note ?? ''}`.trim() : null, ms);
       succeeded++;
     } else {
       // Persist the same "<errorKind>: <detail>" format used for job_runs.error

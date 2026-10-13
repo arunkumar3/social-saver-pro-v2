@@ -47,7 +47,16 @@ export async function postIngest(req, res, { db }) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   const updateItem = db.prepare(`
     UPDATE items SET kind = ?, title = ?, author = ?, author_handle = ?,
-                     caption = ?, source_date = ?, state = ?,
+                     caption = ?, source_date = ?,
+                     -- A text update never re-queues media an item already has.
+                     -- Real incident: a re-saved tweet was reset to pending, the
+                     -- re-download failed, and its 409 MB video was lost. Only a
+                     -- FAILED item is put back in the queue, which is how a
+                     -- transient failure heals through the daily sync. Every CASE
+                     -- here reads the row's pre-update values.
+                     state       = CASE WHEN state = 'failed' THEN ? ELSE state END,
+                     attempts    = CASE WHEN state = 'failed' THEN 0 ELSE attempts END,
+                     state_error = CASE WHEN state = 'failed' THEN NULL ELSE state_error END,
                      updated_at = datetime('now')
     WHERE id = ?`);
   const insertMedia = db.prepare(
